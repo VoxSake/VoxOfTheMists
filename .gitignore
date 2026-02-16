@@ -1,0 +1,50 @@
+﻿# OS / Editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+server.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Build / Coverage
+dist/
+build/
+.vite/
+coverage/
+.nyc_output/
+htmlcov/
+
+# Runtime data (recreated automatically)
+data/vox.db
+data/vox.db-*
+data/*.db-wal
+data/*.db-shm
+data/snapshots/*.json
+.codex-temp/
+.tmp_appwrite_fn/
+appwrite-function/.env*
+
+# Secrets / env
+.env
+.env.*
+!.env.example
