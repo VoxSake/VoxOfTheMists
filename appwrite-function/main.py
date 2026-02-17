@@ -3,13 +3,16 @@ import json
 import os
 import random
 import string
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+import time
 
 import requests
 
 API_BASE = "https://api.gw2mists.com"
 ENDPOINT = f"{API_BASE}/leaderboard/player/v4"
 SITE_URL = "https://gw2mists.com/leaderboards/player?nr=1&c=100"
+RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
 def env(name: str, default: str = "") -> str:
@@ -47,9 +50,22 @@ def fetch_page(session: requests.Session, region_id: int, page: int, per_page: i
         "page": page,
         "perPage": per_page,
     }
-    response = session.post(ENDPOINT, headers=headers, json=payload, timeout=30)
-    response.raise_for_status()
-    return response.json()
+    attempts = max(1, int(env("REQUEST_MAX_ATTEMPTS", "4")))
+    backoff = max(0.25, float(env("REQUEST_BASE_BACKOFF_SECONDS", "0.6")))
+    last_err = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = session.post(ENDPOINT, headers=headers, json=payload, timeout=30)
+            if response.status_code in RETRYABLE_STATUS:
+                raise RuntimeError(f"GW2Mists transient status {response.status_code}: {response.text[:180]}")
+            response.raise_for_status()
+            return response.json()
+        except Exception as err:
+            last_err = err
+            if attempt >= attempts:
+                break
+            time.sleep(backoff * attempt)
+    raise RuntimeError(f"GW2Mists page fetch failed after {attempts} attempts: {last_err}")
 
 
 def scrape(pages: int, per_page: int, region: str) -> dict:
@@ -89,6 +105,10 @@ def scrape(pages: int, per_page: int, region: str) -> dict:
     }
 
 
+def appwrite_escape(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
 class AppwriteClient:
     def __init__(self) -> None:
         self.endpoint = env("APPWRITE_ENDPOINT", "https://cloud.appwrite.io").rstrip("/")
@@ -97,6 +117,9 @@ class AppwriteClient:
         self.database_id = env("APPWRITE_DATABASE_ID")
         self.snapshots_collection_id = env("APPWRITE_SNAPSHOTS_COLLECTION_ID", "snapshots")
         self.entries_collection_id = env("APPWRITE_ENTRIES_COLLECTION_ID", "entries")
+        self.write_concurrency = max(1, int(env("APPWRITE_WRITE_CONCURRENCY", "6")))
+        self.max_attempts = max(1, int(env("REQUEST_MAX_ATTEMPTS", "4")))
+        self.base_backoff_seconds = max(0.25, float(env("REQUEST_BASE_BACKOFF_SECONDS", "0.6")))
         missing = [
             name
             for name, value in [
@@ -126,29 +149,62 @@ class AppwriteClient:
             f"/collections/{collection_id}/documents"
         )
 
-    def list_documents(self, collection_id: str, queries: list[str]) -> list[dict]:
+    def list_documents(self, collection_id: str, queries: list[str] | None = None) -> list[dict]:
         url = self._documents_url(collection_id)
-        # Appwrite Cloud endpoint in this project expects repeated `query` params.
-        resp = requests.get(url, headers=self.headers, params=[("query", q) for q in queries], timeout=30)
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Appwrite list failed {resp.status_code}: {resp.text}")
-        body = resp.json()
-        return body.get("documents", []) or []
+        query_params = [("query", q) for q in (queries or [])]
+        last_err = None
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                resp = requests.get(url, headers=self.headers, params=query_params, timeout=30)
+                if resp.status_code in RETRYABLE_STATUS:
+                    raise RuntimeError(f"Appwrite list transient {resp.status_code}: {resp.text[:180]}")
+                if resp.status_code >= 400:
+                    raise RuntimeError(f"Appwrite list failed {resp.status_code}: {resp.text}")
+                body = resp.json()
+                return body.get("documents", []) or []
+            except Exception as err:
+                last_err = err
+                if attempt >= self.max_attempts:
+                    break
+                time.sleep(self.base_backoff_seconds * attempt)
+        raise RuntimeError(f"Appwrite list failed after {self.max_attempts} attempts: {last_err}")
 
     def create_document(self, collection_id: str, data: dict) -> dict:
         url = self._documents_url(collection_id)
         payload = {"documentId": "unique()", "data": data}
-        resp = requests.post(url, headers=self.headers, data=json.dumps(payload), timeout=30)
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Appwrite create failed {resp.status_code}: {resp.text}")
-        return resp.json()
+        last_err = None
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                resp = requests.post(url, headers=self.headers, data=json.dumps(payload), timeout=30)
+                if resp.status_code in RETRYABLE_STATUS:
+                    raise RuntimeError(f"Appwrite create transient {resp.status_code}: {resp.text[:180]}")
+                if resp.status_code >= 400:
+                    raise RuntimeError(f"Appwrite create failed {resp.status_code}: {resp.text}")
+                return resp.json()
+            except Exception as err:
+                last_err = err
+                if attempt >= self.max_attempts:
+                    break
+                time.sleep(self.base_backoff_seconds * attempt)
+        raise RuntimeError(f"Appwrite create failed after {self.max_attempts} attempts: {last_err}")
+
+    def snapshot_exists(self, snapshot_id: str) -> bool:
+        safe_snapshot_id = appwrite_escape(snapshot_id)
+        queries = [
+            f'equal("snapshotId", ["{safe_snapshot_id}"])',
+            "limit(1)",
+        ]
+        rows = self.list_documents(self.snapshots_collection_id, queries)
+        return any(str(row.get("snapshotId", "")).strip() == snapshot_id for row in rows)
 
 
 def snapshot_exists_for_hour(appwrite: AppwriteClient, snapshot_id: str) -> bool:
-    # Appwrite query grammar can differ by project/runtime version.
-    # For reliability, fetch snapshot docs and compare IDs client-side.
-    rows = appwrite.list_documents(appwrite.snapshots_collection_id, [])
-    return any(str(row.get("snapshotId", "")).strip() == snapshot_id for row in rows)
+    try:
+        return appwrite.snapshot_exists(snapshot_id)
+    except Exception:
+        # Fallback path in case query grammar differs in a custom Appwrite setup.
+        rows = appwrite.list_documents(appwrite.snapshots_collection_id, ["limit(500)"])
+        return any(str(row.get("snapshotId", "")).strip() == snapshot_id for row in rows)
 
 
 def write_snapshot(appwrite: AppwriteClient, snapshot: dict) -> dict:
@@ -164,17 +220,37 @@ def write_snapshot(appwrite: AppwriteClient, snapshot: dict) -> dict:
     }
     appwrite.create_document(appwrite.snapshots_collection_id, snapshot_meta)
 
-    inserted = 0
+    entries = []
     for row in snapshot["entries"]:
-        entry = {
-            "snapshotId": snapshot["snapshotId"],
-            "rank": int(row["rank"]),
-            "accountName": str(row["accountName"]),
-            "weeklyKills": int(row["weeklyKills"]),
-            "totalKills": int(row["totalKills"]),
-        }
-        appwrite.create_document(appwrite.entries_collection_id, entry)
-        inserted += 1
+        entries.append(
+            {
+                "snapshotId": snapshot["snapshotId"],
+                "rank": int(row["rank"]),
+                "accountName": str(row["accountName"]),
+                "weeklyKills": int(row["weeklyKills"]),
+                "totalKills": int(row["totalKills"]),
+            }
+        )
+
+    inserted = 0
+    errors = []
+    with ThreadPoolExecutor(max_workers=appwrite.write_concurrency) as executor:
+        futures = [
+            executor.submit(appwrite.create_document, appwrite.entries_collection_id, entry)
+            for entry in entries
+        ]
+        for future in as_completed(futures):
+            try:
+                future.result()
+                inserted += 1
+            except Exception as err:
+                errors.append(str(err))
+    if errors:
+        raise RuntimeError(
+            f"Snapshot inserted but {len(errors)} entry writes failed (inserted={inserted}/{len(entries)}). "
+            f"First error: {errors[0]}"
+        )
+
     return {"snapshotInserted": 1, "entriesInserted": inserted}
 
 

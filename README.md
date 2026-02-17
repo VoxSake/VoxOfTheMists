@@ -131,22 +131,33 @@ Common options:
 All supported server variables are listed in `.env.example`.
 
 - `PORT=3000`: API/web port
+- `WRITE_API_TOKEN=`: required token for local write routes (`x-admin-token` header). If empty, server generates one at startup (recommended to set explicitly in `.env`)
+- `TRUSTED_LOCAL_ORIGINS=http://127.0.0.1:3000,http://localhost:3000,http://127.0.0.1:5173,http://localhost:5173`: allowed browser Origin/Referer for local write/read protected routes
 - `AUTO_SCRAPE=1`: enable hourly auto-snapshot (`0` disables)
 - `PYTHON_CMD=python`: python executable used by server snapshot process
 - `APPWRITE_SYNC_ENABLED=0`: enable Appwrite -> local SQLite sync (`1` enables)
-- `APPWRITE_ENDPOINT=`: your Appwrite endpoint (ex: `https://cloud.appwrite.io`)
+- `APPWRITE_ENDPOINT=https://cloud.appwrite.io`: your Appwrite endpoint
 - `APPWRITE_PROJECT_ID=`: Appwrite project id
 - `APPWRITE_API_KEY=`: Appwrite server API key
 - `APPWRITE_DATABASE_ID=`: Appwrite database id
 - `APPWRITE_SNAPSHOTS_COLLECTION_ID=`: collection for snapshot metadata
 - `APPWRITE_ENTRIES_COLLECTION_ID=`: collection for snapshot rows
-- `APPWRITE_SYNC_INTERVAL_MINUTES=10`: local pull interval (used if hourly aligned sync is disabled)
+- `APPWRITE_SYNC_INTERVAL_MINUTES=60`: local pull interval (used if hourly aligned sync is disabled)
 - `APPWRITE_SYNC_HOURLY_ALIGNED=1`: run one sync per hour aligned to a fixed UTC minute
 - `APPWRITE_SYNC_TARGET_MINUTE=12`: UTC minute used by aligned hourly sync
-- `APPWRITE_SYNC_DISABLE_LOCAL_SCRAPE=1`: prevents duplicate local+remote scrapes
+- `APPWRITE_SYNC_ENTRY_BATCH_SIZE=20`: snapshot IDs grouped per entries fetch during Appwrite import
+- `APPWRITE_BACKFILL_ENABLED=1`: at `xx:30` UTC, auto-checks current-hour snapshot presence and can trigger Appwrite Function if missing
+- `APPWRITE_BACKFILL_TARGET_MINUTE=30`: UTC minute used by backfill guard
+- `APPWRITE_FUNCTION_ID=`: Appwrite Function ID used by backfill guard execution
+- `API_CACHE_MAX_ENTRIES=1000`: max in-memory API cache entries before pruning
 - `RETENTION_DAYS=0`: keep all snapshots forever (`>0` enables age-based cleanup)
 - `AUTO_VACUUM=1`: enable SQLite vacuum flow (`0` disables)
 - `VACUUM_MIN_HOURS=24`: minimum delay between vacuum runs
+
+Share/Webhook notes:
+- Discord webhook URLs are only used at request time via local write endpoint relay (`POST /api/share/discord`).
+- The webhook URL is not persisted in server env; client-side persistence is browser-local.
+- Share relay routes remain protected by loopback + trusted origin + `x-admin-token`.
 
 ## Appwrite Setup (Optional)
 
@@ -191,16 +202,18 @@ APPWRITE_API_KEY=
 APPWRITE_DATABASE_ID=
 APPWRITE_SNAPSHOTS_COLLECTION_ID=
 APPWRITE_ENTRIES_COLLECTION_ID=
-APPWRITE_SYNC_INTERVAL_MINUTES=10
+APPWRITE_SYNC_INTERVAL_MINUTES=60
 APPWRITE_SYNC_HOURLY_ALIGNED=1
 APPWRITE_SYNC_TARGET_MINUTE=12
-APPWRITE_SYNC_DISABLE_LOCAL_SCRAPE=1
+APPWRITE_SYNC_ENTRY_BATCH_SIZE=20
+API_CACHE_MAX_ENTRIES=1000
 ```
 
 Notes:
-- Keep `APPWRITE_SYNC_DISABLE_LOCAL_SCRAPE=1` to avoid duplicate local+remote scraping.
+- Local scraping is automatically disabled when `APPWRITE_SYNC_ENABLED=1`.
 - Keep `APPWRITE_SYNC_HOURLY_ALIGNED=1` to minimize Appwrite requests.
 - In this mode, local `POST /api/snapshot/run` is intentionally blocked.
+- Optional: `POST /api/sync/run` (loopback only) can trigger an immediate Appwrite pull.
 - In Appwrite mode, manual snapshot actions are disabled in the UI.
 
 ### 3) Configure Appwrite Function env
@@ -218,6 +231,7 @@ GW2MISTS_REGION=eu
 GW2MISTS_PAGES=3
 GW2MISTS_PER_PAGE=100
 DEDUPE_HOURLY=1
+APPWRITE_WRITE_CONCURRENCY=6
 ```
 
 Recommended:
@@ -225,6 +239,28 @@ Recommended:
 - Runtime: Python 3.12
 - Function timeout: 120s
 - Execute access: no public role
+
+## Backup and Restore (SQLite)
+
+Create backup:
+
+```bash
+mkdir -p backups
+cp data/vox.db backups/vox-$(date +%Y%m%d-%H%M%S).db
+```
+
+Windows PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force backups | Out-Null
+Copy-Item data/vox.db ("backups/vox-{0}.db" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+```
+
+Restore backup:
+
+1. Stop server process.
+2. Replace `data/vox.db` with your backup file.
+3. Start server again (`npm start` or `npm run dev`).
 
 ### 4) Validate
 
@@ -268,12 +304,16 @@ Notes:
 
 - `GET /api/leaderboard/delta?top=30&metric=weeklyKills|totalKills&scope=week|all`
 - `GET /api/anomalies?top=20&minDeltaAbs=80&lookbackHours=72&scope=week|all`
+- `GET /api/reset-impact?top=20&windowHours=1..24`
+- `GET /api/consistency?top=20&scope=week|all&days=30`
+- `GET /api/watchlist?accounts=A,B&minGain=30&minRankUp=3&scope=week|all`
 - `GET /api/report/weekly`
 
 ### Operations
 
 - `GET /api/snapshot/status`
 - `POST /api/snapshot/run` (loopback only)
+- `POST /api/sync/run` (loopback only, Appwrite mode)
 - `GET /api/health`
 - `POST /api/maintenance/run` (loopback only)
 
@@ -321,6 +361,19 @@ Cache invalidates after successful snapshot and maintenance cleanup.
 
 - **Server snapshot fails**:
   - ensure Python exists in PATH or set `PYTHON_CMD`.
+
+- **Discord share/test fails**:
+  - verify webhook URL format (`https://discord.com/api/webhooks/...`),
+  - verify local write auth (`x-admin-token`) and trusted local origin,
+  - inspect server logs for `/api/share/discord` or `/api/share/discord/test` status details.
+
+## Startup and Restart Checklist
+
+1. Confirm Node runtime: `node -v` (required: Node `22+`, see `.nvmrc`).
+2. Verify `WRITE_API_TOKEN` exists in `.env`.
+3. Start server: `npm start` (prod local) or `npm run dev`.
+4. Validate health: `GET /api/health`.
+5. If Appwrite sync mode is enabled, confirm `appwriteSync.lastError` is `null` and next run is scheduled.
 
 ## Useful Commands
 

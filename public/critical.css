@@ -1,0 +1,18 @@
+body.dark {
+  background: #09090b;
+  color: #fafafa;
+}
+
+body:not(.dark) {
+  background: #f4f4f3;
+  color: #1c1c1c;
+}
+
+#root {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+#root.ready {
+  opacity: 1;
+}
