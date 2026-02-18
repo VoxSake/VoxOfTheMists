@@ -29,6 +29,13 @@ def region_to_id(region: str) -> int:
     return mapping[region]
 
 
+def normalize_optional_text(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text if text else None
+
+
 def fetch_page(session: requests.Session, region_id: int, page: int, per_page: int) -> dict:
     headers = {
         "x-gw2mists-key": make_key(),
@@ -71,6 +78,13 @@ def scrape(pages: int, per_page: int, region: str) -> dict:
                         "accountName": item.get("accountName", ""),
                         "weeklyKills": int(item.get("kills", 0)),
                         "totalKills": int(item.get("maxKills", 0)),
+                        # Mapping validated with in-game semantics:
+                        # - selectedGuild*: active WvW guild
+                        # - guild*: alliance guild
+                        "wvwGuildName": normalize_optional_text(item.get("selectedGuildName")),
+                        "wvwGuildTag": normalize_optional_text(item.get("selectedGuildTag")),
+                        "allianceGuildName": normalize_optional_text(item.get("guildName")),
+                        "allianceGuildTag": normalize_optional_text(item.get("guildTag")),
                     }
                 )
 
@@ -138,15 +152,54 @@ def ensure_db(conn: sqlite3.Connection) -> None:
             account_name TEXT NOT NULL,
             weekly_kills INTEGER NOT NULL,
             total_kills INTEGER NOT NULL,
+            wvw_guild_name TEXT,
+            wvw_guild_tag TEXT,
+            alliance_guild_name TEXT,
+            alliance_guild_tag TEXT,
             PRIMARY KEY (snapshot_id, rank),
             FOREIGN KEY (snapshot_id) REFERENCES snapshots(snapshot_id) ON DELETE CASCADE
         )
         """
     )
+    current_columns = {row[1] for row in conn.execute("PRAGMA table_info(snapshot_entries)").fetchall()}
+    for col_name in ("wvw_guild_name", "wvw_guild_tag", "alliance_guild_name", "alliance_guild_tag"):
+        if col_name not in current_columns:
+            conn.execute(f"ALTER TABLE snapshot_entries ADD COLUMN {col_name} TEXT")
+    # Transition from previous temporary naming/mapping:
+    # old guild_* actually represented allianceGuild*
+    # old alliance_* actually represented wvwGuild*
+    if "guild_name" in current_columns:
+        conn.execute(
+            "UPDATE snapshot_entries SET alliance_guild_name = COALESCE(alliance_guild_name, guild_name)"
+        )
+    if "guild_tag" in current_columns:
+        conn.execute(
+            "UPDATE snapshot_entries SET alliance_guild_tag = COALESCE(alliance_guild_tag, guild_tag)"
+        )
+    if "alliance_name" in current_columns:
+        conn.execute(
+            "UPDATE snapshot_entries SET wvw_guild_name = COALESCE(wvw_guild_name, alliance_name)"
+        )
+    if "alliance_tag" in current_columns:
+        conn.execute(
+            "UPDATE snapshot_entries SET wvw_guild_tag = COALESCE(wvw_guild_tag, alliance_tag)"
+        )
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_snapshot_entries_account_name
         ON snapshot_entries(account_name COLLATE NOCASE)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_snapshot_entries_wvw_guild_tag
+        ON snapshot_entries(wvw_guild_tag COLLATE NOCASE)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_snapshot_entries_alliance_guild_tag
+        ON snapshot_entries(alliance_guild_tag COLLATE NOCASE)
         """
     )
     conn.commit()
@@ -178,8 +231,8 @@ def save_snapshot_sqlite(snapshot: dict, db_path: Path) -> None:
         conn.executemany(
             """
             INSERT INTO snapshot_entries
-            (snapshot_id, rank, account_name, weekly_kills, total_kills)
-            VALUES (?, ?, ?, ?, ?)
+            (snapshot_id, rank, account_name, weekly_kills, total_kills, wvw_guild_name, wvw_guild_tag, alliance_guild_name, alliance_guild_tag)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -188,6 +241,10 @@ def save_snapshot_sqlite(snapshot: dict, db_path: Path) -> None:
                     str(e["accountName"]),
                     int(e["weeklyKills"]),
                     int(e["totalKills"]),
+                    normalize_optional_text(e.get("wvwGuildName")),
+                    normalize_optional_text(e.get("wvwGuildTag")),
+                    normalize_optional_text(e.get("allianceGuildName")),
+                    normalize_optional_text(e.get("allianceGuildTag")),
                 )
                 for e in snapshot.get("entries", [])
             ],

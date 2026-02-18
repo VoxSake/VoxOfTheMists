@@ -43,7 +43,7 @@ const APPWRITE_SYNC_ENTRY_BATCH_SIZE = Math.max(
   1,
   Math.min(50, Number(process.env.APPWRITE_SYNC_ENTRY_BATCH_SIZE || 20))
 );
-const APPWRITE_BACKFILL_ENABLED = process.env.APPWRITE_BACKFILL_ENABLED !== "0";
+const APPWRITE_BACKFILL_ENABLED = process.env.APPWRITE_BACKFILL_ENABLED === "1";
 const APPWRITE_BACKFILL_TARGET_MINUTE = Math.max(
   0,
   Math.min(59, Number(process.env.APPWRITE_BACKFILL_TARGET_MINUTE || 30))
@@ -74,6 +74,13 @@ const SCRAPE_ARGS = [
   "eu",
   "--no-json",
 ];
+const GW2MISTS_API_BASE = "https://api.gw2mists.com";
+const GW2MISTS_PLAYER_V4_ENDPOINT = `${GW2MISTS_API_BASE}/leaderboard/player/v4`;
+const GW2MISTS_SITE_URL = "https://gw2mists.com/leaderboards/player?nr=1&c=100";
+const GUILD_SEARCH_JOB_TTL_MS = 60 * 60 * 1000;
+const GUILD_SEARCH_MAX_JOBS = 20;
+const GUILD_SEARCH_MAX_PAGES = 100;
+const GUILD_SEARCH_MAX_PER_PAGE = 100;
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
@@ -104,6 +111,10 @@ db.exec(`
     account_name TEXT NOT NULL,
     weekly_kills INTEGER NOT NULL,
     total_kills INTEGER NOT NULL,
+    wvw_guild_name TEXT,
+    wvw_guild_tag TEXT,
+    alliance_guild_name TEXT,
+    alliance_guild_tag TEXT,
     PRIMARY KEY (snapshot_id, rank)
   );
   CREATE INDEX IF NOT EXISTS idx_snapshot_entries_account_name
@@ -113,6 +124,28 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_snapshot_entries_account_snapshot
   ON snapshot_entries(account_name COLLATE NOCASE, snapshot_id);
 `);
+
+const snapshotEntryColumns = new Set(
+  db.prepare("PRAGMA table_info(snapshot_entries)").all().map((row) => String(row.name || "").toLowerCase())
+);
+if (!snapshotEntryColumns.has("wvw_guild_name")) db.exec("ALTER TABLE snapshot_entries ADD COLUMN wvw_guild_name TEXT");
+if (!snapshotEntryColumns.has("wvw_guild_tag")) db.exec("ALTER TABLE snapshot_entries ADD COLUMN wvw_guild_tag TEXT");
+if (!snapshotEntryColumns.has("alliance_guild_name")) db.exec("ALTER TABLE snapshot_entries ADD COLUMN alliance_guild_name TEXT");
+if (!snapshotEntryColumns.has("alliance_guild_tag")) db.exec("ALTER TABLE snapshot_entries ADD COLUMN alliance_guild_tag TEXT");
+if (snapshotEntryColumns.has("guild_name")) {
+  db.exec("UPDATE snapshot_entries SET alliance_guild_name = COALESCE(alliance_guild_name, guild_name)");
+}
+if (snapshotEntryColumns.has("guild_tag")) {
+  db.exec("UPDATE snapshot_entries SET alliance_guild_tag = COALESCE(alliance_guild_tag, guild_tag)");
+}
+if (snapshotEntryColumns.has("alliance_name")) {
+  db.exec("UPDATE snapshot_entries SET wvw_guild_name = COALESCE(wvw_guild_name, alliance_name)");
+}
+if (snapshotEntryColumns.has("alliance_tag")) {
+  db.exec("UPDATE snapshot_entries SET wvw_guild_tag = COALESCE(wvw_guild_tag, alliance_tag)");
+}
+db.exec("CREATE INDEX IF NOT EXISTS idx_snapshot_entries_wvw_guild_tag ON snapshot_entries(wvw_guild_tag COLLATE NOCASE)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_snapshot_entries_alliance_guild_tag ON snapshot_entries(alliance_guild_tag COLLATE NOCASE)");
 
 const qSnapshots = db.prepare(`
   SELECT snapshot_id, created_at, region, count
@@ -138,7 +171,7 @@ const qLatestSnapshot = db.prepare(`
 `);
 
 const qLatestEntries = db.prepare(`
-  SELECT rank, account_name, weekly_kills, total_kills
+  SELECT rank, account_name, weekly_kills, total_kills, wvw_guild_name, wvw_guild_tag, alliance_guild_name, alliance_guild_tag
   FROM snapshot_entries
   WHERE snapshot_id = ?
   ORDER BY rank ASC
@@ -165,8 +198,8 @@ const qDeleteSnapshotEntries = db.prepare(`
 
 const qInsertSnapshotEntry = db.prepare(`
   INSERT INTO snapshot_entries
-  (snapshot_id, rank, account_name, weekly_kills, total_kills)
-  VALUES (?, ?, ?, ?, ?)
+  (snapshot_id, rank, account_name, weekly_kills, total_kills, wvw_guild_name, wvw_guild_tag, alliance_guild_name, alliance_guild_tag)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const qHistory = db.prepare(`
@@ -176,7 +209,11 @@ const qHistory = db.prepare(`
     e.rank AS rank,
     e.weekly_kills AS weeklyKills,
     e.total_kills AS totalKills,
-    e.account_name AS accountName
+    e.account_name AS accountName,
+    e.wvw_guild_name AS wvwGuildName,
+    e.wvw_guild_tag AS wvwGuildTag,
+    e.alliance_guild_name AS allianceGuildName,
+    e.alliance_guild_tag AS allianceGuildTag
   FROM snapshot_entries e
   JOIN snapshots s ON s.snapshot_id = e.snapshot_id
   WHERE e.account_name = ? COLLATE NOCASE
@@ -344,6 +381,43 @@ function getCurrentWeekWindowBrussels(now = new Date()) {
   };
 }
 
+function getBrusselsWeekdayIndexForLocalDate(year, month, day) {
+  const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const probeUtcMs = zonedLocalToUtcMs(year, month, day, 12, 0, 0);
+  const weekday = getBrusselsLocalParts(new Date(probeUtcMs)).weekday;
+  return weekdayMap[weekday] ?? 0;
+}
+
+function getAutoScrapeSlotsForWeekday(weekdayIndex) {
+  const slots = [];
+  for (let hour = 0; hour < 24; hour += 1) {
+    if (weekdayIndex === 5 && (hour === 19 || hour === 20)) continue;
+    slots.push({ hour, minute: 0 });
+  }
+  if (weekdayIndex === 5) slots.push({ hour: 18, minute: 45 });
+  slots.sort((a, b) => (a.hour - b.hour) || (a.minute - b.minute));
+  return slots;
+}
+
+function millisecondsToNextAutoScrape(nowMs = Date.now()) {
+  const localNow = getBrusselsLocalParts(new Date(nowMs));
+  const localMidnight = new Date(Date.UTC(localNow.year, localNow.month - 1, localNow.day));
+  for (let dayOffset = 0; dayOffset <= 8; dayOffset += 1) {
+    const localDay = new Date(localMidnight);
+    localDay.setUTCDate(localDay.getUTCDate() + dayOffset);
+    const year = localDay.getUTCFullYear();
+    const month = localDay.getUTCMonth() + 1;
+    const day = localDay.getUTCDate();
+    const weekdayIndex = getBrusselsWeekdayIndexForLocalDate(year, month, day);
+    const slots = getAutoScrapeSlotsForWeekday(weekdayIndex);
+    for (const slot of slots) {
+      const candidateMs = zonedLocalToUtcMs(year, month, day, slot.hour, slot.minute, 0);
+      if (candidateMs > nowMs + 500) return candidateMs - nowMs;
+    }
+  }
+  return 60 * 60 * 1000;
+}
+
 function getLatestSnapshotMetaInWindow(startUtc, endUtc) {
   const snap = db
     .prepare(
@@ -447,6 +521,25 @@ function sanitizeAccountName(value) {
   const v = String(value || "").trim();
   if (!v || v.length > 80) return "";
   return v;
+}
+
+function normalizeOptionalText(value, maxLen = 120) {
+  const v = String(value ?? "").trim();
+  if (!v) return null;
+  return v.slice(0, maxLen);
+}
+
+function serializeEntryRow(row) {
+  return {
+    rank: row.rank,
+    accountName: row.account_name,
+    weeklyKills: row.weekly_kills,
+    totalKills: row.total_kills,
+    wvwGuildName: row.wvw_guild_name ?? null,
+    wvwGuildTag: row.wvw_guild_tag ?? null,
+    allianceGuildName: row.alliance_guild_name ?? null,
+    allianceGuildTag: row.alliance_guild_tag ?? null,
+  };
 }
 
 function parseAccountsParam(value) {
@@ -558,12 +651,7 @@ async function warmApiCacheAfterDataChange(reason) {
             region: snap.region,
             count: snap.count,
           },
-          entries: qLatestEntries.all(snap.snapshot_id, top).map((row) => ({
-            rank: row.rank,
-            accountName: row.account_name,
-            weeklyKills: row.weekly_kills,
-            totalKills: row.total_kills,
-          })),
+          entries: qLatestEntries.all(snap.snapshot_id, top).map((row) => serializeEntryRow(row)),
         };
       }),
       withApiCache("progression", { top: 10, scope, days: null }, 60_000, async () =>
@@ -589,12 +677,7 @@ async function warmApiCacheAfterDataChange(reason) {
               region: snap.region,
               count: snap.count,
             },
-            entries: qLatestEntries.all(snap.snapshot_id, 100).map((row) => ({
-              rank: row.rank,
-              accountName: row.account_name,
-              weeklyKills: row.weekly_kills,
-              totalKills: row.total_kills,
-            })),
+            entries: qLatestEntries.all(snap.snapshot_id, 100).map((row) => serializeEntryRow(row)),
           };
         });
         return { generatedAt: new Date().toISOString(), latest, delta, anomalies, progression };
@@ -719,6 +802,18 @@ function mapAppwriteEntryDocument(doc) {
     accountName,
     weeklyKills: Number(doc?.weeklyKills || doc?.weekly_kills || 0) || 0,
     totalKills: Number(doc?.totalKills || doc?.total_kills || 0) || 0,
+    wvwGuildName: normalizeOptionalText(
+      doc?.wvwGuildName || doc?.wvw_guild_name || doc?.allianceName || doc?.alliance_name || doc?.selectedGuildName
+    ),
+    wvwGuildTag: normalizeOptionalText(
+      doc?.wvwGuildTag || doc?.wvw_guild_tag || doc?.allianceTag || doc?.alliance_tag || doc?.selectedGuildTag
+    ),
+    allianceGuildName: normalizeOptionalText(
+      doc?.allianceGuildName || doc?.alliance_guild_name || doc?.guildName || doc?.guild_name
+    ),
+    allianceGuildTag: normalizeOptionalText(
+      doc?.allianceGuildTag || doc?.alliance_guild_tag || doc?.guildTag || doc?.guild_tag
+    ),
   };
 }
 
@@ -742,7 +837,11 @@ function importSnapshotIntoLocalDb(snapshot, entries) {
         entry.rank,
         entry.accountName,
         Math.max(0, Math.floor(entry.weeklyKills)),
-        Math.max(0, Math.floor(entry.totalKills))
+        Math.max(0, Math.floor(entry.totalKills)),
+        normalizeOptionalText(entry.wvwGuildName),
+        normalizeOptionalText(entry.wvwGuildTag),
+        normalizeOptionalText(entry.allianceGuildName),
+        normalizeOptionalText(entry.allianceGuildTag)
       );
     }
     db.exec("COMMIT");
@@ -1003,6 +1102,163 @@ const cacheWarmStatus = {
   lastFinishedAt: null,
   lastError: null,
 };
+const guildSearchJobs = new Map();
+
+function cleanupGuildSearchJobs() {
+  const now = Date.now();
+  for (const [jobId, job] of guildSearchJobs) {
+    const done = job.status === "completed" || job.status === "failed";
+    const finishedAtMs = job.finishedAt ? Date.parse(job.finishedAt) : 0;
+    if (done && finishedAtMs > 0 && now - finishedAtMs > GUILD_SEARCH_JOB_TTL_MS) {
+      guildSearchJobs.delete(jobId);
+    }
+  }
+  if (guildSearchJobs.size <= GUILD_SEARCH_MAX_JOBS) return;
+  const oldestDone = [...guildSearchJobs.values()]
+    .filter((job) => job.status === "completed" || job.status === "failed")
+    .sort((a, b) => Date.parse(a.finishedAt || a.createdAt || 0) - Date.parse(b.finishedAt || b.createdAt || 0));
+  while (guildSearchJobs.size > GUILD_SEARCH_MAX_JOBS && oldestDone.length) {
+    const item = oldestDone.shift();
+    guildSearchJobs.delete(item.id);
+  }
+}
+
+function gw2MistsRegionToId(region) {
+  if (region === "na") return 1;
+  return 2;
+}
+
+function makeGw2MistsKey() {
+  const nowMs = Date.now();
+  const left = crypto.randomBytes(8).toString("hex");
+  const right = crypto.randomBytes(8).toString("hex");
+  return `${nowMs}-${left}-guenther-${right}`;
+}
+
+function normalizeGuildSearchText(value) {
+  const v = String(value ?? "").trim();
+  return v || null;
+}
+
+async function fetchGw2MistsGuildSearchPage({ region, search, page, perPage }) {
+  const payload = {
+    region: gw2MistsRegionToId(region),
+    filter: { stat: "kills", teams: [], search, ownAccount: 0 },
+    sort: 0,
+    sortDir: 0,
+    page,
+    perPage,
+  };
+  const res = await fetch(GW2MISTS_PLAYER_V4_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "x-gw2mists-key": makeGw2MistsKey(),
+      Origin: "https://gw2mists.com",
+      Referer: GW2MISTS_SITE_URL,
+      Accept: "application/json, text/plain, */*",
+      "User-Agent": "Mozilla/5.0",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`GW2Mists search failed (${res.status})${text ? `: ${text.slice(0, 140)}` : ""}`);
+  }
+  return res.json();
+}
+
+async function runGuildSearchJob(jobId) {
+  const job = guildSearchJobs.get(jobId);
+  if (!job) return;
+  job.status = "running";
+  job.startedAt = new Date().toISOString();
+  job.error = null;
+  try {
+    const first = await fetchGw2MistsGuildSearchPage({
+      region: job.region,
+      search: job.query,
+      page: 1,
+      perPage: job.perPage,
+    });
+    const totalAvailable = Math.max(0, Number(first?.total || 0));
+    const totalPagesRaw = Math.max(1, Math.ceil(totalAvailable / job.perPage));
+    const pagesTotal = Math.min(job.maxPages, totalPagesRaw);
+    job.totalAvailable = totalAvailable;
+    job.pagesTotal = pagesTotal;
+    const seen = new Set();
+    const rows = [];
+    const addRows = (items, pageNo) => {
+      const list = Array.isArray(items) ? items : [];
+      for (let i = 0; i < list.length; i += 1) {
+        const item = list[i] || {};
+        const accountName = sanitizeAccountName(item.accountName || "");
+        if (!accountName) continue;
+        const key = accountName.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        rows.push({
+          rank: (pageNo - 1) * job.perPage + i + 1,
+          accountName,
+          teamName: String(item.teamName || "").trim() || "-",
+          weeklyKills: Math.max(0, Math.floor(Number(item.kills || 0) || 0)),
+          totalKills: Math.max(0, Math.floor(Number(item.maxKills || 0) || 0)),
+          wvwGuildName: normalizeGuildSearchText(item.selectedGuildName),
+          wvwGuildTag: normalizeGuildSearchText(item.selectedGuildTag),
+          allianceGuildName: normalizeGuildSearchText(item.guildName),
+          allianceGuildTag: normalizeGuildSearchText(item.guildTag),
+        });
+      }
+      job.pagesFetched = pageNo;
+      job.resultCount = rows.length;
+    };
+    addRows(first?.data, 1);
+    for (let page = 2; page <= pagesTotal; page += 1) {
+      const data = await fetchGw2MistsGuildSearchPage({
+        region: job.region,
+        search: job.query,
+        page,
+        perPage: job.perPage,
+      });
+      addRows(data?.data, page);
+    }
+    job.rows = rows;
+    job.status = "completed";
+    job.finishedAt = new Date().toISOString();
+  } catch (err) {
+    job.status = "failed";
+    job.error = String(err?.message || err || "Guild search failed");
+    job.finishedAt = new Date().toISOString();
+  }
+}
+
+function createGuildSearchJob({ query, region, maxPages, perPage }) {
+  cleanupGuildSearchJobs();
+  const id = crypto.randomUUID();
+  const nowIso = new Date().toISOString();
+  const job = {
+    id,
+    query,
+    region,
+    maxPages,
+    perPage,
+    status: "queued",
+    createdAt: nowIso,
+    startedAt: null,
+    finishedAt: null,
+    pagesFetched: 0,
+    pagesTotal: null,
+    totalAvailable: null,
+    resultCount: 0,
+    error: null,
+    rows: [],
+  };
+  guildSearchJobs.set(id, job);
+  setImmediate(() => {
+    runGuildSearchJob(id).catch(() => { });
+  });
+  return job;
+}
 
 function getMaintenanceHealth() {
   return {
@@ -1672,14 +1928,6 @@ function runSnapshotAsync(trigger) {
   });
 }
 
-function millisecondsToNextFullHour() {
-  const now = new Date();
-  const next = new Date(now);
-  next.setMinutes(0, 0, 0);
-  next.setHours(next.getHours() + 1);
-  return next.getTime() - now.getTime();
-}
-
 function scheduleHourlyScrape() {
   if (!AUTO_SCRAPE_EFFECTIVE) {
     if (!AUTO_SCRAPE_ENABLED) fastify.log.info("[auto-scrape] Disabled (AUTO_SCRAPE=0).");
@@ -1688,13 +1936,13 @@ function scheduleHourlyScrape() {
     }
     return;
   }
-  const delay = millisecondsToNextFullHour();
+  const delay = millisecondsToNextAutoScrape();
   nextHourlyAtIso = new Date(Date.now() + delay).toISOString();
   fastify.log.info(`[auto-scrape] Next snapshot at ${nextHourlyAtIso}.`);
   clearTimeout(scrapeTimer);
   scrapeTimer = setTimeout(() => {
-    runSnapshotAsync("hourly").catch((err) => {
-      fastify.log.error(`[auto-scrape] Hourly run failed: ${err.message}`);
+    runSnapshotAsync("scheduled").catch((err) => {
+      fastify.log.error(`[auto-scrape] Scheduled run failed: ${err.message}`);
     });
     scheduleHourlyScrape();
   }, delay);
@@ -2048,12 +2296,7 @@ async function buildServer() {
               region: snap.region,
               count: snap.count,
             },
-            entries: qLatestEntries.all(snap.snapshot_id, 100).map((row) => ({
-              rank: row.rank,
-              accountName: row.account_name,
-              weeklyKills: row.weekly_kills,
-              totalKills: row.total_kills,
-            })),
+            entries: qLatestEntries.all(snap.snapshot_id, 100).map((row) => serializeEntryRow(row)),
           };
         });
         return { generatedAt: new Date().toISOString(), latest, delta, anomalies, progression };
@@ -2330,12 +2573,7 @@ async function buildServer() {
             region: snap.region,
             count: snap.count,
           },
-          entries: qLatestEntries.all(snap.snapshot_id, top).map((row) => ({
-            rank: row.rank,
-            accountName: row.account_name,
-            weeklyKills: row.weekly_kills,
-            totalKills: row.total_kills,
-          })),
+          entries: qLatestEntries.all(snap.snapshot_id, top).map((row) => serializeEntryRow(row)),
         };
       });
     }
@@ -2445,6 +2683,106 @@ async function buildServer() {
         const rows = qAccountSearch.all(`%${query}%`, limit);
         return { accounts: rows.map((r) => r.account_name) };
       });
+    }
+  );
+
+  fastify.post(
+    "/api/guild-search/run",
+    {
+      preHandler: requireTrustedLocalWrite,
+      schema: {
+        body: {
+          type: "object",
+          additionalProperties: false,
+          required: ["query"],
+          properties: {
+            query: { type: "string", minLength: 1, maxLength: 120 },
+            region: { type: "string", enum: ["eu", "na"], default: "eu" },
+            maxPages: { type: "integer", minimum: 1, maximum: GUILD_SEARCH_MAX_PAGES, default: GUILD_SEARCH_MAX_PAGES },
+            perPage: { type: "integer", minimum: 10, maximum: GUILD_SEARCH_MAX_PER_PAGE, default: 100 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const query = String(request.body?.query || "").trim();
+      if (!query) return reply.code(400).send({ error: "Missing query." });
+      const region = request.body?.region === "na" ? "na" : "eu";
+      const maxPages = Math.max(
+        1,
+        Math.min(GUILD_SEARCH_MAX_PAGES, Number(request.body?.maxPages || GUILD_SEARCH_MAX_PAGES))
+      );
+      const perPage = Math.max(10, Math.min(GUILD_SEARCH_MAX_PER_PAGE, Number(request.body?.perPage || 100)));
+      const job = createGuildSearchJob({ query, region, maxPages, perPage });
+      request.log.info(
+        { route: "/api/guild-search/run", requestId: request.id, jobId: job.id, query, region, maxPages, perPage },
+        "Started guild search job"
+      );
+      return { ok: true, jobId: job.id };
+    }
+  );
+
+  fastify.get(
+    "/api/guild-search/:jobId",
+    {
+      preHandler: requireTrustedLocalRead,
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["jobId"],
+          properties: {
+            jobId: { type: "string", minLength: 1, maxLength: 80 },
+          },
+        },
+        querystring: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            page: { type: "integer", minimum: 1, maximum: 100000, default: 1 },
+            pageSize: { type: "integer", minimum: 10, maximum: 200, default: 50 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      cleanupGuildSearchJobs();
+      const jobId = String(request.params.jobId || "").trim();
+      const page = Math.max(1, Number(request.query.page || 1));
+      const pageSize = Math.max(10, Math.min(200, Number(request.query.pageSize || 50)));
+      const job = guildSearchJobs.get(jobId);
+      if (!job) return reply.code(404).send({ error: "Guild search job not found." });
+
+      const totalRows = job.rows.length;
+      const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+      const safePage = Math.min(page, totalPages);
+      const start = (safePage - 1) * pageSize;
+      const rows = job.rows.slice(start, start + pageSize);
+      return {
+        jobId: job.id,
+        query: job.query,
+        region: job.region,
+        status: job.status,
+        createdAt: job.createdAt,
+        startedAt: job.startedAt,
+        finishedAt: job.finishedAt,
+        error: job.error,
+        pagesFetched: job.pagesFetched,
+        pagesTotal: job.pagesTotal,
+        maxPages: job.maxPages,
+        perPage: job.perPage,
+        totalAvailable: job.totalAvailable,
+        resultCount: job.resultCount,
+        pagination: {
+          page: safePage,
+          pageSize,
+          totalRows,
+          totalPages,
+          startIndex: totalRows ? start + 1 : 0,
+          endIndex: totalRows ? Math.min(start + pageSize, totalRows) : 0,
+        },
+        rows,
+      };
     }
   );
 

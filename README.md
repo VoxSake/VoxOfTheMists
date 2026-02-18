@@ -7,7 +7,7 @@ It snapshots leaderboard data into SQLite, then provides an interactive dashboar
 - progression analysis,
 - account comparison,
 - momentum/anomaly detection,
-- and automated hourly refresh.
+- and automated scheduled refresh.
 
 ## Tech Stack
 
@@ -27,7 +27,7 @@ It snapshots leaderboard data into SQLite, then provides an interactive dashboar
 ## Repository Layout
 
 - `scraper/scrape_gw2mists.py`: data ingestion (manual or watch mode)
-- `server.js`: API routes, caching, hourly scheduler, retention/vacuum maintenance
+- `server.js`: API routes, caching, scheduled scraper, retention/vacuum maintenance
 - `src/App.jsx`: dashboard logic, filters, charts, controls, exports
 - `src/styles.css`: UI theme/style system
 - `data/`: runtime DB and optional snapshot JSON backup
@@ -69,7 +69,7 @@ It snapshots leaderboard data into SQLite, then provides an interactive dashboar
 
 ### Automation & maintenance
 
-- Hourly auto-snapshot at `HH:00`.
+- Auto-snapshot runs hourly.
 - Snapshot status endpoint.
 - Retention cleanup + optional SQLite vacuum.
 
@@ -146,7 +146,7 @@ All supported server variables are listed in `.env.example`.
 - `APPWRITE_SYNC_HOURLY_ALIGNED=1`: run one sync per hour aligned to a fixed UTC minute
 - `APPWRITE_SYNC_TARGET_MINUTE=12`: UTC minute used by aligned hourly sync
 - `APPWRITE_SYNC_ENTRY_BATCH_SIZE=20`: snapshot IDs grouped per entries fetch during Appwrite import
-- `APPWRITE_BACKFILL_ENABLED=1`: at `xx:30` UTC, auto-checks current-hour snapshot presence and can trigger Appwrite Function if missing
+- `APPWRITE_BACKFILL_ENABLED=0`: optional server-side function trigger guard (disabled by default)
 - `APPWRITE_BACKFILL_TARGET_MINUTE=30`: UTC minute used by backfill guard
 - `APPWRITE_FUNCTION_ID=`: Appwrite Function ID used by backfill guard execution
 - `API_CACHE_MAX_ENTRIES=1000`: max in-memory API cache entries before pruning
@@ -189,6 +189,10 @@ Create one database with:
   - `accountName` (string, indexed)
   - `weeklyKills` (integer)
   - `totalKills` (integer)
+  - `wvwGuildName` (string, optional)
+  - `wvwGuildTag` (string, optional, indexed)
+  - `allianceGuildName` (string, optional)
+  - `allianceGuildTag` (string, optional, indexed)
 
 ### 2) Configure local server sync (`.env`)
 
@@ -231,14 +235,55 @@ GW2MISTS_REGION=eu
 GW2MISTS_PAGES=3
 GW2MISTS_PER_PAGE=100
 DEDUPE_HOURLY=1
+SNAPSHOT_TIMEZONE=UTC
+RESET_POLICY_ENABLED=0
+RESET_WEEKDAY=4
+RESET_HOUR_LOCAL=19
+PRE_RESET_OFFSET_MINUTES=15
+PRE_RESET_WINDOW_START_MINUTES=20
+POST_RESET_SKIP_HOURS=2
+MANUAL_OVERRIDE_TOKEN=
 APPWRITE_WRITE_CONCURRENCY=6
 ```
 
 Recommended:
-- Schedule: `0 * * * *`
+- Schedule: `*/15 * * * *` (function checks hourly slot and only writes if missing)
 - Runtime: Python 3.12
 - Function timeout: 120s
 - Execute access: no public role
+
+Optional GW2 reset policy (recommended for EU reset behavior):
+- `SNAPSHOT_TIMEZONE=Europe/Brussels`
+- `RESET_POLICY_ENABLED=1`
+- `RESET_WEEKDAY=4`
+- `RESET_HOUR_LOCAL=19`
+- `PRE_RESET_OFFSET_MINUTES=15` (captures `18:45`)
+- `PRE_RESET_WINDOW_START_MINUTES=20` (runs from `18:40`..`18:59` map to `18:45`)
+- `POST_RESET_SKIP_HOURS=2` (skips `19:00` and `20:00`, resumes `21:00`)
+
+Manual one-off override (without changing function env flags):
+- Set `MANUAL_OVERRIDE_TOKEN` in function variables.
+- Trigger execution with a payload body like:
+
+```json
+{
+  "overrideToken": "your-secret-token",
+  "forceBypassDedupe": false,
+  "forceCaptureTimeUtc": "2026-02-18T17:00:00+00:00"
+}
+```
+
+`forceCaptureTimeUtc` is optional; if set, that exact UTC slot is used for the run.
+
+Before deploying the updated function, run the one-time Appwrite entries schema migration:
+
+```bash
+python appwrite-function/migrate_entries_schema.py
+```
+
+Notes:
+- Script uses `APPWRITE_*` env vars and updates the `entries` collection only.
+- In GW2Mists payload mapping, `selectedGuild*` is stored as `wvwGuild*`, and `guild*` is stored as `allianceGuild*`.
 
 ## Backup and Restore (SQLite)
 

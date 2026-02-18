@@ -4,10 +4,12 @@ import os
 import random
 import string
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import time
-
-import requests
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 API_BASE = "https://api.gw2mists.com"
 ENDPOINT = f"{API_BASE}/leaderboard/player/v4"
@@ -33,7 +35,109 @@ def region_to_id(region: str) -> int:
     return mapping[region]
 
 
-def fetch_page(session: requests.Session, region_id: int, page: int, per_page: int) -> dict:
+def normalize_optional_text(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text if text else None
+
+
+def as_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def parse_utc_datetime(value) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed
+
+
+def parse_json_object(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", errors="ignore")
+    if not isinstance(value, str):
+        return {}
+    text = value.strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def context_payload(context) -> dict:
+    if context is None:
+        return {}
+    req = getattr(context, "req", None)
+    if req is None:
+        return {}
+    for attr in ("bodyJson", "body_json", "body", "bodyRaw", "rawBody"):
+        try:
+            raw_value = getattr(req, attr)
+        except Exception:
+            continue
+        parsed = parse_json_object(raw_value)
+        if parsed:
+            return parsed
+    return {}
+
+
+def http_json(
+    method: str,
+    url: str,
+    headers: dict | None = None,
+    params: list[tuple[str, str]] | None = None,
+    payload: dict | None = None,
+    timeout: int = 30,
+) -> tuple[int, str, dict]:
+    final_url = url
+    if params:
+        query = urlencode(params, doseq=True)
+        final_url = f"{url}?{query}" if query else url
+    data_bytes = None
+    req_headers = dict(headers or {})
+    if payload is not None:
+        data_bytes = json.dumps(payload).encode("utf-8")
+        req_headers.setdefault("Content-Type", "application/json")
+    req = Request(final_url, data=data_bytes, headers=req_headers, method=method.upper())
+    try:
+        with urlopen(req, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+            status = int(response.status or 200)
+            parsed = json.loads(body) if body else {}
+            return status, body, parsed
+    except HTTPError as err:
+        body = err.read().decode("utf-8", errors="replace") if hasattr(err, "read") else str(err)
+        status = int(err.code or 500)
+        return status, body, {}
+    except URLError as err:
+        raise RuntimeError(f"Network error: {err}") from err
+
+
+def fetch_page(region_id: int, page: int, per_page: int) -> dict:
     headers = {
         "x-gw2mists-key": make_key(),
         "Origin": "https://gw2mists.com",
@@ -55,11 +159,12 @@ def fetch_page(session: requests.Session, region_id: int, page: int, per_page: i
     last_err = None
     for attempt in range(1, attempts + 1):
         try:
-            response = session.post(ENDPOINT, headers=headers, json=payload, timeout=30)
-            if response.status_code in RETRYABLE_STATUS:
-                raise RuntimeError(f"GW2Mists transient status {response.status_code}: {response.text[:180]}")
-            response.raise_for_status()
-            return response.json()
+            status, body, parsed = http_json("POST", ENDPOINT, headers=headers, payload=payload, timeout=30)
+            if status in RETRYABLE_STATUS:
+                raise RuntimeError(f"GW2Mists transient status {status}: {body[:180]}")
+            if status >= 400:
+                raise RuntimeError(f"GW2Mists status {status}: {body[:180]}")
+            return parsed
         except Exception as err:
             last_err = err
             if attempt >= attempts:
@@ -68,29 +173,89 @@ def fetch_page(session: requests.Session, region_id: int, page: int, per_page: i
     raise RuntimeError(f"GW2Mists page fetch failed after {attempts} attempts: {last_err}")
 
 
-def scrape(pages: int, per_page: int, region: str) -> dict:
+def resolve_hourly_capture_utc(now_utc: datetime) -> tuple[datetime, str]:
+    tz_name = env("SNAPSHOT_TIMEZONE", "UTC") or "UTC"
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz_name = "UTC"
+        tz = timezone.utc
+    local_now = now_utc.astimezone(tz)
+    local_slot = local_now.replace(minute=0, second=0, microsecond=0)
+
+    reset_policy_enabled = env("RESET_POLICY_ENABLED", "0") != "0"
+    if reset_policy_enabled:
+        try:
+            reset_weekday = int(env("RESET_WEEKDAY", "4"))  # Friday
+        except Exception:
+            reset_weekday = 4
+        reset_weekday = max(0, min(6, reset_weekday))
+        try:
+            reset_hour_local = int(env("RESET_HOUR_LOCAL", "19"))
+        except Exception:
+            reset_hour_local = 19
+        reset_hour_local = max(0, min(23, reset_hour_local))
+        try:
+            pre_reset_offset_minutes = int(env("PRE_RESET_OFFSET_MINUTES", "15"))
+        except Exception:
+            pre_reset_offset_minutes = 15
+        pre_reset_offset_minutes = max(1, min(59, pre_reset_offset_minutes))
+        try:
+            pre_reset_window_start_minutes = int(env("PRE_RESET_WINDOW_START_MINUTES", str(pre_reset_offset_minutes)))
+        except Exception:
+            pre_reset_window_start_minutes = pre_reset_offset_minutes
+        pre_reset_window_start_minutes = max(pre_reset_offset_minutes, min(59, pre_reset_window_start_minutes))
+        try:
+            post_reset_skip_hours = int(env("POST_RESET_SKIP_HOURS", "2"))
+        except Exception:
+            post_reset_skip_hours = 2
+        post_reset_skip_hours = max(0, min(12, post_reset_skip_hours))
+
+        if int(local_now.weekday()) == reset_weekday:
+            reset_point = local_now.replace(hour=reset_hour_local, minute=0, second=0, microsecond=0)
+            pre_reset_window_start = reset_point - timedelta(minutes=pre_reset_window_start_minutes)
+            pre_reset_point = reset_point - timedelta(minutes=pre_reset_offset_minutes)
+            resume_point = reset_point + timedelta(hours=post_reset_skip_hours)
+            if pre_reset_window_start <= local_now < reset_point:
+                local_slot = pre_reset_point
+            elif reset_point <= local_now < resume_point:
+                return None, tz_name
+
+    return local_slot.astimezone(timezone.utc), tz_name
+
+
+def scrape(pages: int, per_page: int, region: str, capture_time_utc: datetime | None = None) -> dict:
     region_id = region_to_id(region)
-    now_utc = datetime.now(tz=timezone.utc)
-    hour_utc = now_utc.replace(minute=0, second=0, microsecond=0)
-    created_at = hour_utc.isoformat()
+    now_utc = capture_time_utc or datetime.now(tz=timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    else:
+        now_utc = now_utc.astimezone(timezone.utc)
+    created_at = now_utc.replace(second=0, microsecond=0).isoformat()
     entries = []
     total = None
 
-    with requests.Session() as session:
-        for page in range(1, pages + 1):
-            data = fetch_page(session, region_id, page, per_page)
-            if total is None:
-                total = int(data.get("total", 0))
-            for index, item in enumerate(data.get("data", []), start=1):
-                rank = (page - 1) * per_page + index
-                entries.append(
-                    {
-                        "rank": rank,
-                        "accountName": item.get("accountName", ""),
-                        "weeklyKills": int(item.get("kills", 0)),
-                        "totalKills": int(item.get("maxKills", 0)),
-                    }
-                )
+    for page in range(1, pages + 1):
+        data = fetch_page(region_id, page, per_page)
+        if total is None:
+            total = int(data.get("total", 0))
+        for index, item in enumerate(data.get("data", []), start=1):
+            rank = (page - 1) * per_page + index
+            entries.append(
+                {
+                    "rank": rank,
+                    "accountName": item.get("accountName", ""),
+                    "weeklyKills": int(item.get("kills", 0)),
+                    "totalKills": int(item.get("maxKills", 0)),
+                    # Mapping validated with in-game semantics:
+                    # - selectedGuild*: active WvW guild
+                    # - guild*: alliance guild
+                    "wvwGuildName": normalize_optional_text(item.get("selectedGuildName")),
+                    "wvwGuildTag": normalize_optional_text(item.get("selectedGuildTag")),
+                    "allianceGuildName": normalize_optional_text(item.get("guildName")),
+                    "allianceGuildTag": normalize_optional_text(item.get("guildTag")),
+                }
+            )
 
     return {
         "snapshotId": created_at.replace(":", "-"),
@@ -111,9 +276,11 @@ def appwrite_escape(value: str) -> str:
 
 class AppwriteClient:
     def __init__(self) -> None:
-        self.endpoint = env("APPWRITE_ENDPOINT", "https://cloud.appwrite.io").rstrip("/")
-        self.project_id = env("APPWRITE_PROJECT_ID")
-        self.api_key = env("APPWRITE_API_KEY")
+        self.endpoint = env("APPWRITE_FUNCTION_API_ENDPOINT", env("APPWRITE_ENDPOINT", "https://cloud.appwrite.io")).rstrip("/")
+        if self.endpoint.endswith("/v1"):
+            self.endpoint = self.endpoint[:-3]
+        self.project_id = env("APPWRITE_FUNCTION_PROJECT_ID", env("APPWRITE_PROJECT_ID"))
+        self.api_key = env("APPWRITE_FUNCTION_API_KEY", env("APPWRITE_API_KEY"))
         self.database_id = env("APPWRITE_DATABASE_ID")
         self.snapshots_collection_id = env("APPWRITE_SNAPSHOTS_COLLECTION_ID", "snapshots")
         self.entries_collection_id = env("APPWRITE_ENTRIES_COLLECTION_ID", "entries")
@@ -151,16 +318,15 @@ class AppwriteClient:
 
     def list_documents(self, collection_id: str, queries: list[str] | None = None) -> list[dict]:
         url = self._documents_url(collection_id)
-        query_params = [("query", q) for q in (queries or [])]
+        query_params = [("queries[]", q) for q in (queries or [])]
         last_err = None
         for attempt in range(1, self.max_attempts + 1):
             try:
-                resp = requests.get(url, headers=self.headers, params=query_params, timeout=30)
-                if resp.status_code in RETRYABLE_STATUS:
-                    raise RuntimeError(f"Appwrite list transient {resp.status_code}: {resp.text[:180]}")
-                if resp.status_code >= 400:
-                    raise RuntimeError(f"Appwrite list failed {resp.status_code}: {resp.text}")
-                body = resp.json()
+                status, raw, body = http_json("GET", url, headers=self.headers, params=query_params, timeout=30)
+                if status in RETRYABLE_STATUS:
+                    raise RuntimeError(f"Appwrite list transient {status}: {raw[:180]}")
+                if status >= 400:
+                    raise RuntimeError(f"Appwrite list failed {status}: {raw[:180]}")
                 return body.get("documents", []) or []
             except Exception as err:
                 last_err = err
@@ -175,12 +341,12 @@ class AppwriteClient:
         last_err = None
         for attempt in range(1, self.max_attempts + 1):
             try:
-                resp = requests.post(url, headers=self.headers, data=json.dumps(payload), timeout=30)
-                if resp.status_code in RETRYABLE_STATUS:
-                    raise RuntimeError(f"Appwrite create transient {resp.status_code}: {resp.text[:180]}")
-                if resp.status_code >= 400:
-                    raise RuntimeError(f"Appwrite create failed {resp.status_code}: {resp.text}")
-                return resp.json()
+                status, raw, body = http_json("POST", url, headers=self.headers, payload=payload, timeout=30)
+                if status in RETRYABLE_STATUS:
+                    raise RuntimeError(f"Appwrite create transient {status}: {raw[:180]}")
+                if status >= 400:
+                    raise RuntimeError(f"Appwrite create failed {status}: {raw[:180]}")
+                return body
             except Exception as err:
                 last_err = err
                 if attempt >= self.max_attempts:
@@ -198,13 +364,13 @@ class AppwriteClient:
         return any(str(row.get("snapshotId", "")).strip() == snapshot_id for row in rows)
 
 
-def snapshot_exists_for_hour(appwrite: AppwriteClient, snapshot_id: str) -> bool:
+def snapshot_exists_for_slot(appwrite: AppwriteClient, snapshot_id: str) -> bool:
     try:
         return appwrite.snapshot_exists(snapshot_id)
     except Exception:
-        # Fallback path in case query grammar differs in a custom Appwrite setup.
-        rows = appwrite.list_documents(appwrite.snapshots_collection_id, ["limit(500)"])
-        return any(str(row.get("snapshotId", "")).strip() == snapshot_id for row in rows)
+        # Some keys are write-only and cannot read snapshots. In that case,
+        # fail-open so ingestion can continue and rely on snapshot write constraints.
+        return False
 
 
 def write_snapshot(appwrite: AppwriteClient, snapshot: dict) -> dict:
@@ -229,6 +395,10 @@ def write_snapshot(appwrite: AppwriteClient, snapshot: dict) -> dict:
                 "accountName": str(row["accountName"]),
                 "weeklyKills": int(row["weeklyKills"]),
                 "totalKills": int(row["totalKills"]),
+                "wvwGuildName": normalize_optional_text(row.get("wvwGuildName")),
+                "wvwGuildTag": normalize_optional_text(row.get("wvwGuildTag")),
+                "allianceGuildName": normalize_optional_text(row.get("allianceGuildName")),
+                "allianceGuildTag": normalize_optional_text(row.get("allianceGuildTag")),
             }
         )
 
@@ -254,22 +424,59 @@ def write_snapshot(appwrite: AppwriteClient, snapshot: dict) -> dict:
     return {"snapshotInserted": 1, "entriesInserted": inserted}
 
 
-def run() -> dict:
+def run(overrides: dict | None = None) -> dict:
     pages = max(1, int(env("GW2MISTS_PAGES", "3")))
     per_page = max(1, int(env("GW2MISTS_PER_PAGE", "100")))
     region = env("GW2MISTS_REGION", "eu").lower()
     dedupe_hourly = env("DEDUPE_HOURLY", "1") != "0"
+    override_flags = {
+        "bypassDedupe": False,
+        "forcedCaptureTimeUtc": None,
+    }
 
-    snapshot = scrape(pages=pages, per_page=per_page, region=region)
+    if isinstance(overrides, dict):
+        if as_bool(overrides.get("bypassDedupe"), False):
+            dedupe_hourly = False
+            override_flags["bypassDedupe"] = True
+        forced_capture_time = overrides.get("captureTimeUtc")
+        if forced_capture_time is not None:
+            parsed_capture_time = parse_utc_datetime(forced_capture_time)
+            if parsed_capture_time is None:
+                raise RuntimeError("Invalid override captureTimeUtc")
+            override_flags["forcedCaptureTimeUtc"] = parsed_capture_time.isoformat()
+        else:
+            parsed_capture_time = None
+    else:
+        parsed_capture_time = None
+
+    now_utc = datetime.now(tz=timezone.utc)
+    slot_utc, slot_tz = resolve_hourly_capture_utc(now_utc)
+    if parsed_capture_time is not None:
+        capture_time_utc = parsed_capture_time
+    else:
+        if slot_utc is None:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "post_reset_cooldown",
+                "slotTimezone": slot_tz,
+                "nowUtc": now_utc.isoformat(),
+                "overrideApplied": override_flags,
+            }
+        capture_time_utc = slot_utc
+
+    snapshot = scrape(pages=pages, per_page=per_page, region=region, capture_time_utc=capture_time_utc)
     appwrite = AppwriteClient()
 
-    if dedupe_hourly and snapshot_exists_for_hour(appwrite, snapshot["snapshotId"]):
+    if dedupe_hourly and snapshot_exists_for_slot(appwrite, snapshot["snapshotId"]):
         return {
             "ok": True,
             "skipped": True,
-            "reason": "snapshot_already_exists_for_hour",
+            "reason": "snapshot_already_exists_for_slot",
             "snapshotId": snapshot["snapshotId"],
             "createdAt": snapshot["createdAt"],
+            "slotTimezone": slot_tz,
+            "overrideApplied": override_flags,
         }
 
     write_result = write_snapshot(appwrite, snapshot)
@@ -279,12 +486,43 @@ def run() -> dict:
         "snapshotId": snapshot["snapshotId"],
         "createdAt": snapshot["createdAt"],
         "count": snapshot["count"],
+        "slotTimezone": slot_tz,
+        "overrideApplied": override_flags,
         **write_result,
     }
 
 
 def main(context=None):  # Appwrite runtime may call this function.
-    result = run()
+    payload = context_payload(context)
+    override_token = env("MANUAL_OVERRIDE_TOKEN", "")
+    requested_overrides = {
+        "bypassDedupe": as_bool(payload.get("forceBypassDedupe"), False)
+        or as_bool(payload.get("bypassDedupe"), False),
+        "captureTimeUtc": (
+            payload.get("forceCaptureTimeUtc")
+            if payload.get("forceCaptureTimeUtc") is not None
+            else payload.get("captureTimeUtc")
+        ),
+    }
+    override_requested = (
+        requested_overrides["bypassDedupe"]
+        or requested_overrides["captureTimeUtc"] is not None
+    )
+    provided_token = str(
+        payload.get("overrideToken")
+        if payload.get("overrideToken") is not None
+        else payload.get("forceRunToken", "")
+    ).strip()
+
+    if override_requested and (not override_token or provided_token != override_token):
+        result = {
+            "ok": False,
+            "error": "override_token_invalid_or_missing",
+            "overrideRequested": True,
+        }
+    else:
+        result = run(requested_overrides if override_requested else None)
+
     if context is not None and hasattr(context, "res"):
         return context.res.json(result)
     print(json.dumps(result, ensure_ascii=True))
