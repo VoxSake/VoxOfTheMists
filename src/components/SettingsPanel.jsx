@@ -43,7 +43,7 @@ export function SettingsPanel({
               checked={hideAnonymized}
               onChange={(e) => setHideAnonymized(e.target.checked)}
             />
-            Hide anonymized
+            Hide anonymized accounts
           </label>
           <label className="check-inline">
             <input
@@ -59,7 +59,7 @@ export function SettingsPanel({
               checked={plainMode}
               onChange={(e) => setPlainMode(e.target.checked)}
             />
-            Plain mode
+            Reduced effects
           </label>
         </div>
 

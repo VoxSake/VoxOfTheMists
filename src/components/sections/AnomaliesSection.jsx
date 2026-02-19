@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { SortTh } from "../SortTh";
 import { fmtNumber, formatTimestamp } from "../../utils";
@@ -19,6 +20,32 @@ export function AnomaliesSection({
   onNextPage,
   anomaliesVisibleRows,
 }) {
+  const [anomalyMinDraft, setAnomalyMinDraft] = useState(String(anomalyMinDelta));
+
+  useEffect(() => {
+    setAnomalyMinDraft(String(anomalyMinDelta));
+  }, [anomalyMinDelta]);
+
+  const commitAnomalyMinDelta = (rawValue) => {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed)) {
+      setAnomalyMinDraft(String(anomalyMinDelta));
+      return;
+    }
+    const clamped = Math.max(10, Math.min(5000, Math.floor(parsed)));
+    setAnomalyMinDelta(clamped);
+    setAnomalyMinDraft(String(clamped));
+  };
+
+  const handleAnomalyMinChange = (rawValue) => {
+    setAnomalyMinDraft(rawValue);
+    if (!rawValue) return;
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return;
+    if (parsed < 10 || parsed > 5000) return;
+    setAnomalyMinDelta(parsed);
+  };
+
   return (
     <ErrorBoundary name="Anomaly Alerts">
       <section className="card" id="anomalies">
@@ -31,8 +58,12 @@ export function AnomaliesSection({
               type="number"
               min={10}
               max={5000}
-              value={anomalyMinDelta}
-              onChange={(e) => setAnomalyMinDelta(Math.max(10, Math.min(5000, Number(e.target.value || 80))))}
+              value={anomalyMinDraft}
+              onChange={(e) => handleAnomalyMinChange(e.target.value)}
+              onBlur={(e) => commitAnomalyMinDelta(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
             />
             <select
               value={anomaliesPageSize}
@@ -43,7 +74,7 @@ export function AnomaliesSection({
               <option value={100}>100 / page</option>
             </select>
             <button className="btn ghost" onClick={exportAnomaliesCsv}>
-              CSV
+              Export CSV
             </button>
           </div>
         </div>
@@ -69,7 +100,7 @@ export function AnomaliesSection({
               <tr>
                 <SortTh sortable={anomalySort} sortKey="createdAt">Time</SortTh>
                 <SortTh sortable={anomalySort} sortKey="accountName">Account</SortTh>
-                <SortTh sortable={anomalySort} sortKey="direction">Type</SortTh>
+                <SortTh sortable={anomalySort} sortKey="direction">Direction</SortTh>
                 <SortTh sortable={anomalySort} sortKey="latestDelta">Latest Delta</SortTh>
                 <SortTh sortable={anomalySort} sortKey="baselineAvg">Baseline</SortTh>
                 <SortTh sortable={anomalySort} sortKey="deviation">Deviation</SortTh>

@@ -118,12 +118,31 @@ export function buildSnapshotHtml(snapshot) {
   const compareSummaries = section(
     "Compare Activity Summary",
     table(
-      ["Account", "Dominant Segment", "Confidence", "Total Hours", "Hours/Day", "Night", "Morning", "Afternoon", "Primetime", "Evening"],
+      [
+        "Account",
+        "Dominant Segment",
+        "Confidence",
+        "Total Hours",
+        "Avg Kills/h",
+        "Weekly Gain",
+        "Projected +",
+        "Projected At Reset",
+        "Hours/Day",
+        "Night",
+        "Morning",
+        "Afternoon",
+        "Primetime",
+        "Evening",
+      ],
       (snapshot.compareSummaries || []).map((s) => [
         s.account,
         s.dominant,
         `${s.confidence}%`,
         s.totalHours ?? 0,
+        s.avgKillsPerHour ?? "-",
+        s.weeklyKillsGain ?? "-",
+        s.projectedWeeklyGain ?? "-",
+        s.projectedWeeklyAtReset ?? "-",
         `Fri ${s.hoursByDay?.Friday ?? 0}h | Sat ${s.hoursByDay?.Saturday ?? 0}h | Sun ${s.hoursByDay?.Sunday ?? 0}h | Mon ${s.hoursByDay?.Monday ?? 0}h | Tue ${s.hoursByDay?.Tuesday ?? 0}h | Wed ${s.hoursByDay?.Wednesday ?? 0}h | Thu ${s.hoursByDay?.Thursday ?? 0}h`,
         s.deltas.Night,
         s.deltas.Morning,
@@ -133,6 +152,22 @@ export function buildSnapshotHtml(snapshot) {
       ]),
       nextTableId("compare-summary")
     )
+  );
+
+  const compareProjection = section(
+    "Current Week Projection",
+    list([`<strong>Projected leader:</strong> ${esc(snapshot.compareProjectionLeader || "-")}`]) +
+      table(
+        ["Account", "Avg Kills/h", "Weekly Gain", "Projected +", "Projected At Reset"],
+        (snapshot.compareProjection || []).map((r) => [
+          r.account,
+          r.avgKillsPerHour,
+          r.weeklyKillsGain,
+          r.projectedGain,
+          r.projectedWeeklyAtReset,
+        ]),
+        nextTableId("compare-projection")
+      )
   );
 
   return `<!doctype html>
@@ -171,6 +206,7 @@ export function buildSnapshotHtml(snapshot) {
   ${anomalies}
   ${resetImpact}
   ${consistency}
+  ${compareProjection}
   ${compareSummaries}
   <script>
     (() => {

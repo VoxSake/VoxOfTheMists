@@ -34,8 +34,9 @@ export function useShareSettings({ addToast, timeZone, shareData }) {
 
   async function exportShareSnapshotHtml() {
     try {
+      const generatedAt = formatTimestamp(new Date().toISOString(), timeZone);
       const snapshot = {
-        generatedAt: formatTimestamp(new Date().toISOString(), timeZone),
+        generatedAt,
         timeZone,
         overview: {
           latestSnapshot: shareData.latestSnapshot
@@ -100,6 +101,7 @@ export function useShareSettings({ addToast, timeZone, shareData }) {
           totalGain: fmtNumber(r.totalGain),
         })),
         compareSummaries: shareData.compareSummaries.map((s) => {
+          const projection = (shareData.compareProjectionShare?.rows || []).find((r) => r.account === s.account);
           const totalHours =
             Number(s.hoursByDay?.Friday || 0) +
             Number(s.hoursByDay?.Saturday || 0) +
@@ -108,8 +110,27 @@ export function useShareSettings({ addToast, timeZone, shareData }) {
             Number(s.hoursByDay?.Tuesday || 0) +
             Number(s.hoursByDay?.Wednesday || 0) +
             Number(s.hoursByDay?.Thursday || 0);
-          return { ...s, totalHours };
+          return {
+            ...s,
+            totalHours,
+            avgKillsPerHour: projection?.avgPerHour ?? null,
+            weeklyKillsGain: projection?.weeklyGain ?? null,
+            projectedWeeklyGain: projection?.projectedGain ?? null,
+            projectedWeeklyAtReset: projection?.projectedWeekly ?? null,
+          };
         }),
+        compareProjection: (shareData.compareProjectionShare?.rows || []).map((r) => ({
+          account: r.account,
+          avgKillsPerHour: fmtNumber(r.avgPerHour),
+          weeklyKillsGain: fmtNumber(r.weeklyGain),
+          projectedGain: fmtNumber(r.projectedGain),
+          projectedWeeklyAtReset: fmtNumber(r.projectedWeekly),
+        })),
+        compareProjectionLeader: shareData.compareProjectionShare?.leader
+          ? `${shareData.compareProjectionShare.leader.account} (${fmtNumber(
+            shareData.compareProjectionShare.leader.projectedWeekly
+          )})`
+          : "-",
       };
       const { buildSnapshotHtml } = await import("../utils/snapshotExport");
       const html = buildSnapshotHtml(snapshot);
@@ -129,7 +150,7 @@ export function useShareSettings({ addToast, timeZone, shareData }) {
           webhookUrl: discordWebhookUrl.trim(),
           filename,
           html,
-          content: `Vox snapshot export (${formatTimestamp(new Date().toISOString(), timeZone)} - ${timeZone})`,
+          content: `Vox of the Mists - Snapshot - ${generatedAt}`,
         });
         addToast({
           title: "Share Snapshot",

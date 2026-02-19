@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { SortTh } from "../SortTh";
 import { fmtNumber } from "../../utils";
@@ -15,6 +16,57 @@ export function WatchlistSection({
   setWatchlistMinRankUp,
   watchlistSort,
 }) {
+  const [watchlistMinGainDraft, setWatchlistMinGainDraft] = useState(String(watchlistMinGain));
+  const [watchlistMinRankUpDraft, setWatchlistMinRankUpDraft] = useState(String(watchlistMinRankUp));
+
+  useEffect(() => {
+    setWatchlistMinGainDraft(String(watchlistMinGain));
+  }, [watchlistMinGain]);
+
+  useEffect(() => {
+    setWatchlistMinRankUpDraft(String(watchlistMinRankUp));
+  }, [watchlistMinRankUp]);
+
+  const commitWatchlistMinGain = (rawValue) => {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed)) {
+      setWatchlistMinGainDraft(String(watchlistMinGain));
+      return;
+    }
+    const clamped = Math.max(0, Math.min(5000, Math.floor(parsed)));
+    setWatchlistMinGain(clamped);
+    setWatchlistMinGainDraft(String(clamped));
+  };
+
+  const commitWatchlistMinRankUp = (rawValue) => {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed)) {
+      setWatchlistMinRankUpDraft(String(watchlistMinRankUp));
+      return;
+    }
+    const clamped = Math.max(0, Math.min(200, Math.floor(parsed)));
+    setWatchlistMinRankUp(clamped);
+    setWatchlistMinRankUpDraft(String(clamped));
+  };
+
+  const handleWatchlistMinGainChange = (rawValue) => {
+    setWatchlistMinGainDraft(rawValue);
+    if (!rawValue) return;
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return;
+    if (parsed < 0 || parsed > 5000) return;
+    setWatchlistMinGain(parsed);
+  };
+
+  const handleWatchlistMinRankUpChange = (rawValue) => {
+    setWatchlistMinRankUpDraft(rawValue);
+    if (!rawValue) return;
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return;
+    if (parsed < 0 || parsed > 200) return;
+    setWatchlistMinRankUp(parsed);
+  };
+
   return (
     <ErrorBoundary name="Watchlist Alerts">
       <section className="card" id="watchlist">
@@ -61,16 +113,24 @@ export function WatchlistSection({
               type="number"
               min={0}
               max={5000}
-              value={watchlistMinGain}
-              onChange={(e) => setWatchlistMinGain(Math.max(0, Math.min(5000, Number(e.target.value || 30))))}
+              value={watchlistMinGainDraft}
+              onChange={(e) => handleWatchlistMinGainChange(e.target.value)}
+              onBlur={(e) => commitWatchlistMinGain(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
             />
             <span className="muted">or rank up &gt;=</span>
             <input
               type="number"
               min={0}
               max={200}
-              value={watchlistMinRankUp}
-              onChange={(e) => setWatchlistMinRankUp(Math.max(0, Math.min(200, Number(e.target.value || 3))))}
+              value={watchlistMinRankUpDraft}
+              onChange={(e) => handleWatchlistMinRankUpChange(e.target.value)}
+              onBlur={(e) => commitWatchlistMinRankUp(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
             />
           </div>
         </div>

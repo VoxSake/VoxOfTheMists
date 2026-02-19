@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { SortTh } from "../SortTh";
 import { fmtNumber, formatTimestamp } from "../../utils";
@@ -26,6 +27,32 @@ export function RankMoversSection({
   deltaSort,
   moversVisibleRows,
 }) {
+  const [topDeltaDraft, setTopDeltaDraft] = useState(String(topDelta));
+
+  useEffect(() => {
+    setTopDeltaDraft(String(topDelta));
+  }, [topDelta]);
+
+  const commitTopDelta = (rawValue) => {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed)) {
+      setTopDeltaDraft(String(topDelta));
+      return;
+    }
+    const clamped = Math.max(5, Math.min(200, Math.floor(parsed)));
+    setTopDelta(clamped);
+    setTopDeltaDraft(String(clamped));
+  };
+
+  const handleTopDeltaChange = (rawValue) => {
+    setTopDeltaDraft(rawValue);
+    if (!rawValue) return;
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return;
+    if (parsed < 5 || parsed > 200) return;
+    setTopDelta(parsed);
+  };
+
   return (
     <ErrorBoundary name="Rank Movers">
       <section className="card" id="movers">
@@ -44,8 +71,14 @@ export function RankMoversSection({
               type="number"
               min={5}
               max={200}
-              value={topDelta}
-              onChange={(e) => setTopDelta(Math.max(5, Math.min(200, Number(e.target.value || 30))))}
+              value={topDeltaDraft}
+              aria-label="Top movers rows"
+              title="Top movers rows"
+              onChange={(e) => handleTopDeltaChange(e.target.value)}
+              onBlur={(e) => commitTopDelta(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
             />
             <select
               value={moversPageSize}
@@ -56,7 +89,7 @@ export function RankMoversSection({
               <option value={100}>100 / page</option>
             </select>
             <button className="btn ghost" onClick={exportDeltaCsv}>
-              CSV
+              Export CSV
             </button>
           </div>
         </div>

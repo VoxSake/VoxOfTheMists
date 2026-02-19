@@ -3,6 +3,7 @@ import json
 import os
 import random
 import string
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 import time
@@ -274,6 +275,13 @@ def appwrite_escape(value: str) -> str:
     return str(value).replace("\\", "\\\\").replace('"', '\\"')
 
 
+def deterministic_doc_id(prefix: str, seed: str, length: int = 28) -> str:
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    max_len = max(8, 36 - len(prefix) - 1)
+    safe_len = max(8, min(length, max_len))
+    return f"{prefix}_{digest[:safe_len]}"
+
+
 class AppwriteClient:
     def __init__(self) -> None:
         self.endpoint = env("APPWRITE_FUNCTION_API_ENDPOINT", env("APPWRITE_ENDPOINT", "https://cloud.appwrite.io")).rstrip("/")
@@ -335,17 +343,47 @@ class AppwriteClient:
                 time.sleep(self.base_backoff_seconds * attempt)
         raise RuntimeError(f"Appwrite list failed after {self.max_attempts} attempts: {last_err}")
 
-    def create_document(self, collection_id: str, data: dict) -> dict:
+    def get_document(self, collection_id: str, document_id: str) -> dict | None:
+        url = f"{self._documents_url(collection_id)}/{document_id}"
+        last_err = None
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                status, raw, body = http_json("GET", url, headers=self.headers, timeout=30)
+                if status == 404:
+                    return None
+                if status in RETRYABLE_STATUS:
+                    raise RuntimeError(f"Appwrite get transient {status}: {raw[:180]}")
+                if status >= 400:
+                    raise RuntimeError(f"Appwrite get failed {status}: {raw[:180]}")
+                return body if isinstance(body, dict) else {}
+            except Exception as err:
+                last_err = err
+                if attempt >= self.max_attempts:
+                    break
+                time.sleep(self.base_backoff_seconds * attempt)
+        raise RuntimeError(f"Appwrite get failed after {self.max_attempts} attempts: {last_err}")
+
+    def create_document(
+        self,
+        collection_id: str,
+        data: dict,
+        document_id: str | None = None,
+        conflict_as_success: bool = False,
+    ) -> dict:
         url = self._documents_url(collection_id)
-        payload = {"documentId": "unique()", "data": data}
+        payload = {"documentId": document_id or "unique()", "data": data}
         last_err = None
         for attempt in range(1, self.max_attempts + 1):
             try:
                 status, raw, body = http_json("POST", url, headers=self.headers, payload=payload, timeout=30)
+                if status == 409 and conflict_as_success:
+                    return {"_conflict": True, "$id": payload["documentId"]}
                 if status in RETRYABLE_STATUS:
                     raise RuntimeError(f"Appwrite create transient {status}: {raw[:180]}")
                 if status >= 400:
                     raise RuntimeError(f"Appwrite create failed {status}: {raw[:180]}")
+                body = body if isinstance(body, dict) else {}
+                body["_conflict"] = False
                 return body
             except Exception as err:
                 last_err = err
@@ -355,22 +393,17 @@ class AppwriteClient:
         raise RuntimeError(f"Appwrite create failed after {self.max_attempts} attempts: {last_err}")
 
     def snapshot_exists(self, snapshot_id: str) -> bool:
-        safe_snapshot_id = appwrite_escape(snapshot_id)
-        queries = [
-            f'equal("snapshotId", ["{safe_snapshot_id}"])',
-            "limit(1)",
-        ]
-        rows = self.list_documents(self.snapshots_collection_id, queries)
-        return any(str(row.get("snapshotId", "")).strip() == snapshot_id for row in rows)
+        snapshot_doc_id = deterministic_doc_id("snapshot", snapshot_id)
+        doc = self.get_document(self.snapshots_collection_id, snapshot_doc_id)
+        return doc is not None
 
 
 def snapshot_exists_for_slot(appwrite: AppwriteClient, snapshot_id: str) -> bool:
     try:
         return appwrite.snapshot_exists(snapshot_id)
-    except Exception:
-        # Some keys are write-only and cannot read snapshots. In that case,
-        # fail-open so ingestion can continue and rely on snapshot write constraints.
-        return False
+    except Exception as err:
+        # Fail-closed: if dedupe cannot be verified, do not risk duplicate writes.
+        raise RuntimeError(f"Dedupe check failed for snapshot {snapshot_id}: {err}") from err
 
 
 def write_snapshot(appwrite: AppwriteClient, snapshot: dict) -> dict:
@@ -384,7 +417,20 @@ def write_snapshot(appwrite: AppwriteClient, snapshot: dict) -> dict:
         "totalAvailable": int(snapshot["totalAvailable"]),
         "count": int(snapshot["count"]),
     }
-    appwrite.create_document(appwrite.snapshots_collection_id, snapshot_meta)
+    snapshot_doc_id = deterministic_doc_id("snapshot", snapshot["snapshotId"])
+    snapshot_write = appwrite.create_document(
+        appwrite.snapshots_collection_id,
+        snapshot_meta,
+        document_id=snapshot_doc_id,
+        conflict_as_success=True,
+    )
+    if snapshot_write.get("_conflict"):
+        return {
+            "snapshotInserted": 0,
+            "entriesInserted": 0,
+            "entriesConflicts": 0,
+            "reason": "snapshot_already_exists_conflict",
+        }
 
     entries = []
     for row in snapshot["entries"]:
@@ -403,16 +449,26 @@ def write_snapshot(appwrite: AppwriteClient, snapshot: dict) -> dict:
         )
 
     inserted = 0
+    conflicts = 0
     errors = []
     with ThreadPoolExecutor(max_workers=appwrite.write_concurrency) as executor:
         futures = [
-            executor.submit(appwrite.create_document, appwrite.entries_collection_id, entry)
+            executor.submit(
+                appwrite.create_document,
+                appwrite.entries_collection_id,
+                entry,
+                deterministic_doc_id("entry", f"{snapshot['snapshotId']}:{entry['rank']}"),
+                True,
+            )
             for entry in entries
         ]
         for future in as_completed(futures):
             try:
-                future.result()
-                inserted += 1
+                result = future.result()
+                if result.get("_conflict"):
+                    conflicts += 1
+                else:
+                    inserted += 1
             except Exception as err:
                 errors.append(str(err))
     if errors:
@@ -421,7 +477,7 @@ def write_snapshot(appwrite: AppwriteClient, snapshot: dict) -> dict:
             f"First error: {errors[0]}"
         )
 
-    return {"snapshotInserted": 1, "entriesInserted": inserted}
+    return {"snapshotInserted": 1, "entriesInserted": inserted, "entriesConflicts": conflicts}
 
 
 def run(overrides: dict | None = None) -> dict:
@@ -480,6 +536,17 @@ def run(overrides: dict | None = None) -> dict:
         }
 
     write_result = write_snapshot(appwrite, snapshot)
+    if write_result.get("reason") == "snapshot_already_exists_conflict":
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "snapshot_already_exists_for_slot_conflict",
+            "snapshotId": snapshot["snapshotId"],
+            "createdAt": snapshot["createdAt"],
+            "slotTimezone": slot_tz,
+            "overrideApplied": override_flags,
+            **write_result,
+        }
     return {
         "ok": True,
         "skipped": False,

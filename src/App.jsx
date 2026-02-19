@@ -1,8 +1,6 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  fmtNumber,
   isAnonymizedAccount,
-  formatTimestamp,
   timeBucketFromLocalTime,
   downloadCsv,
 } from "./utils";
@@ -12,15 +10,29 @@ import { usePersistedState } from "./hooks/usePersistedState";
 import { useToast } from "./hooks/useToast.jsx";
 import { useDashboardStats } from "./hooks/useDashboardStats";
 import { useShareSettings } from "./hooks/useShareSettings";
+import { usePaginatedRows } from "./hooks/usePaginatedRows";
+import { useGuildCheckJob } from "./hooks/useGuildCheckJob";
+import { useSortable } from "./hooks/useSortable";
+import { useAccountSearchFilter } from "./hooks/useAccountSearchFilter";
+import { useDashboardData } from "./hooks/useDashboardData";
 import { ToastContainer } from "./components/Toast";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { SectionNav } from "./components/SectionNav";
 import { LeaderboardSection } from "./components/sections/LeaderboardSection";
 import { StatsSection } from "./components/sections/StatsSection";
+import {
+  LEADERBOARD_CSV_HEADERS,
+  ANOMALIES_CSV_HEADERS,
+  buildDeltaCsvHeaders,
+  mapAnomalyRowsForCsv,
+} from "./utils/csvExports";
 
 const loadRankMoversSection = () =>
   import("./components/sections/RankMoversSection").then((m) => ({ default: m.RankMoversSection }));
 const loadWatchlistSection = () =>
   import("./components/sections/WatchlistSection").then((m) => ({ default: m.WatchlistSection }));
+const loadGuildCheckSection = () =>
+  import("./components/sections/GuildCheckSection").then((m) => ({ default: m.GuildCheckSection }));
 const loadAnomaliesSection = () =>
   import("./components/sections/AnomaliesSection").then((m) => ({ default: m.AnomaliesSection }));
 const loadResetImpactSection = () =>
@@ -34,6 +46,7 @@ const loadCompareAccountsSection = () =>
 
 const RankMoversSection = lazy(loadRankMoversSection);
 const WatchlistSection = lazy(loadWatchlistSection);
+const GuildCheckSection = lazy(loadGuildCheckSection);
 const AnomaliesSection = lazy(loadAnomaliesSection);
 const ResetImpactSection = lazy(loadResetImpactSection);
 const ConsistencySection = lazy(loadConsistencySection);
@@ -46,97 +59,12 @@ const SECTION_PREFETCHERS = {
   "reset-impact": loadResetImpactSection,
   consistency: loadConsistencySection,
   watchlist: loadWatchlistSection,
+  "guild-check": loadGuildCheckSection,
   progression: loadTopProgressionSection,
   compare: loadCompareAccountsSection,
 };
 
-/* ── Sortable-data hook ── */
-function useSortable(data, defaultSort = null) {
-  const [sort, setSort] = useState(defaultSort);
-
-  const sorted = useMemo(() => {
-    if (!sort || !data.length) return data;
-    return [...data].sort((a, b) => {
-      const aVal = a[sort.key];
-      const bVal = b[sort.key];
-      if (aVal == null && bVal == null) return 0;
-      if (aVal == null) return 1;
-      if (bVal == null) return -1;
-      const isNum = typeof aVal === "number" || typeof bVal === "number";
-      const cmp = isNum ? Number(aVal) - Number(bVal) : String(aVal).localeCompare(String(bVal));
-      return sort.dir === "desc" ? -cmp : cmp;
-    });
-  }, [data, sort]);
-
-  const toggle = (key) => {
-    setSort((prev) => ({
-      key,
-      dir: prev?.key === key && prev.dir === "asc" ? "desc" : "asc",
-    }));
-  };
-
-  const indicator = (key) => {
-    if (sort?.key !== key) return "";
-    return sort.dir === "asc" ? " ▲" : " ▼";
-  };
-
-  return { sorted, toggle, indicator };
-}
-
 /* ── Section navigation ── */
-const NAV_SECTIONS = [
-  { id: "stats", label: "Overview" },
-  { id: "leaderboard", label: "Leaderboard" },
-  { id: "movers", label: "Movers" },
-  { id: "anomalies", label: "Anomalies" },
-  { id: "reset-impact", label: "Reset Impact" },
-  { id: "consistency", label: "Consistency" },
-  { id: "watchlist", label: "Watchlist" },
-  { id: "progression", label: "Progression" },
-  { id: "compare", label: "Compare" },
-];
-
-function SectionNav() {
-  const [activeId, setActiveId] = useState("stats");
-
-  useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            setActiveId(entry.target.id);
-            break;
-          }
-        }
-      },
-      { rootMargin: "-80px 0px -60% 0px", threshold: 0.1 }
-    );
-    NAV_SECTIONS.forEach(({ id }) => {
-      const el = document.getElementById(id);
-      if (el) observer.observe(el);
-    });
-    return () => observer.disconnect();
-  }, []);
-
-  return (
-    <nav className="section-nav">
-      {NAV_SECTIONS.map(({ id, label }) => (
-        <a
-          key={id}
-          href={`#${id}`}
-          className={activeId === id ? "active" : ""}
-          onClick={(e) => {
-            e.preventDefault();
-            document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
-          }}
-        >
-          {label}
-        </a>
-      ))}
-    </nav>
-  );
-}
-
 function parseBooleanTrue(raw) {
   return String(raw) === "1";
 }
@@ -177,13 +105,22 @@ export default function App() {
   const [metric, setMetric] = useState("weeklyKills");
   const [compareBaseline, setCompareBaseline] = useState("raw");
   const [deltaMetric, setDeltaMetric] = useState("weeklyKills");
-  const [topDelta, setTopDelta] = useState(30);
+  const [topDelta, setTopDelta] = usePersistedState("vox-top-delta", 30, {
+    parse: (raw) => parseBoundedInt(raw, 30, 5, 200),
+    serialize: (v) => String(v),
+  });
   const [showTotalDelta, setShowTotalDelta] = usePersistedState("vox-show-total-delta", true, {
     parse: parseBooleanNotZero,
     serialize: (v) => (v ? "1" : "0"),
   });
-  const [anomalyMinDelta, setAnomalyMinDelta] = useState(80);
-  const [topLeaderboard, setTopLeaderboard] = useState(300);
+  const [anomalyMinDelta, setAnomalyMinDelta] = usePersistedState("vox-anomaly-min-delta", 80, {
+    parse: (raw) => parseBoundedInt(raw, 80, 10, 5000),
+    serialize: (v) => String(v),
+  });
+  const [topLeaderboard, setTopLeaderboard] = usePersistedState("vox-top-leaderboard", 300, {
+    parse: (raw) => parseBoundedInt(raw, 300, 1, 300),
+    serialize: (v) => String(v),
+  });
   const [leaderboardPage, setLeaderboardPage] = useState(1);
   const [leaderboardPageSize, setLeaderboardPageSize] = useState(50);
   const [moversPage, setMoversPage] = usePersistedState("vox-movers-page", 1, {
@@ -204,22 +141,20 @@ export default function App() {
   });
   const [topProgression, setTopProgression] = useState(10);
   const [scope, setScope] = useState("week");
+  const [selectedWeekEnd, setSelectedWeekEnd] = usePersistedState("vox-selected-week-end", "", {
+    parse: (raw) => String(raw || "").trim(),
+    serialize: (v) => String(v || ""),
+  });
   const [allTimeRange, setAllTimeRange] = useState("30d");
-  const [latestSnapshot, setLatestSnapshot] = useState(null);
-  const [snapshotCount, setSnapshotCount] = useState(0);
-  const [entries, setEntries] = useState([]);
   const [search, setSearch] = useState("");
-  const [progressionPayload, setProgressionPayload] = useState(null);
   const [compareAccounts, setCompareAccounts] = usePersistedState("vox-compare-accounts", [], {
     parse: (raw) => parseStringArray(raw, 10),
   });
-  const [comparePayload, setComparePayload] = useState(null);
-  const [deltaPayload, setDeltaPayload] = useState(null);
-  const [anomaliesPayload, setAnomaliesPayload] = useState(null);
   const [resetImpactWindow, setResetImpactWindow] = useState(3);
-  const [resetImpactPayload, setResetImpactPayload] = useState(null);
-  const [consistencyTop, setConsistencyTop] = useState(20);
-  const [consistencyPayload, setConsistencyPayload] = useState(null);
+  const [consistencyTop, setConsistencyTop] = usePersistedState("vox-consistency-top", 20, {
+    parse: (raw) => parseBoundedInt(raw, 20, 5, 100),
+    serialize: (v) => String(v),
+  });
   const [watchlistAccounts, setWatchlistAccounts] = usePersistedState("vox-watchlist", [], {
     parse: (raw) => parseStringArray(raw, 10),
   });
@@ -233,9 +168,6 @@ export default function App() {
     parse: (raw) => parseBoundedInt(raw, 3, 0, 200),
     serialize: (v) => String(v),
   });
-  const [watchlistPayload, setWatchlistPayload] = useState(null);
-  const [healthPayload, setHealthPayload] = useState(null);
-  const [weeklyReport, setWeeklyReport] = useState(null);
   const [compareInput, setCompareInput] = useState("");
   const [suggestions, setSuggestions] = useState([]);
   const [themeDark, setThemeDark] = usePersistedState("vox-theme", true, {
@@ -250,17 +182,11 @@ export default function App() {
     parse: parseBooleanTrue,
     serialize: (v) => (v ? "1" : "0"),
   });
-  const [snapshotRunning, setSnapshotRunning] = useState(false);
-  const [appwriteSyncRunning, setAppwriteSyncRunning] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
-  const [initialLoading, setInitialLoading] = useState(true);
   const suggestTimer = useRef(null);
   const watchlistSuggestTimer = useRef(null);
-  const lastFinishedAtRef = useRef(null);
-  const statusPollTimerRef = useRef(null);
-  const latestSnapshotIdRef = useRef(null);
   const prefetchedSectionChunksRef = useRef(new Set());
-  latestSnapshotIdRef.current = latestSnapshot?.snapshotId || null;
+  const guildCheck = useGuildCheckJob({ addToast });
 
   useEffect(() => {
     const prefetched = prefetchedSectionChunksRef.current;
@@ -307,7 +233,10 @@ export default function App() {
     document.body.classList.toggle("plain-mode", plainMode);
   }, [plainMode]);
 
-  const isVisibleAccount = (name) => !hideAnonymized || !isAnonymizedAccount(name);
+  const isVisibleAccount = useCallback(
+    (name) => !hideAnonymized || !isAnonymizedAccount(name),
+    [hideAnonymized]
+  );
 
   useEffect(() => {
     if (!hideAnonymized) return;
@@ -332,99 +261,50 @@ export default function App() {
     () => (hideAnonymized ? watchlistAccounts.filter((a) => !isAnonymizedAccount(a)) : watchlistAccounts),
     [watchlistAccounts, hideAnonymized]
   );
-  const compareAccountsRef = useRef(effectiveCompareAccounts);
-  const scopeRef = useRef(scope);
-  const allTimeDaysParamRef = useRef(allTimeDaysParam);
-  compareAccountsRef.current = effectiveCompareAccounts;
-  scopeRef.current = scope;
-  allTimeDaysParamRef.current = allTimeDaysParam;
+  const {
+    latestSnapshot,
+    snapshotCount,
+    entries,
+    progressionPayload,
+    comparePayload,
+    deltaPayload,
+    anomaliesPayload,
+    resetImpactPayload,
+    consistencyPayload,
+    watchlistPayload,
+    healthPayload,
+    weeklyReport,
+    weekOptions,
+    snapshotRunning,
+    appwriteSyncRunning,
+    initialLoading,
+    refreshAll,
+    runManualSnapshot,
+    runManualAppwriteSync,
+  } = useDashboardData({
+    addToast,
+    topLeaderboard,
+    topProgression,
+    scope,
+    allTimeDaysParam,
+    effectiveCompareAccounts,
+    topDelta,
+    deltaMetric,
+    anomalyMinDelta,
+    resetImpactWindow,
+    consistencyTop,
+    effectiveWatchlistAccounts,
+    watchlistMinGain,
+    watchlistMinRankUp,
+    selectedWeekEnd: selectedWeekEnd || null,
+  });
 
-  /* ── Data loading ── */
-  async function loadOverview() {
-    const [latest, snapshots] = await Promise.all([
-      api.getLatest(topLeaderboard),
-      api.getSnapshots(),
-    ]);
-    setLatestSnapshot(latest.snapshot);
-    setEntries(latest.entries || []);
-    setSnapshotCount((snapshots.snapshots || []).length);
-  }
-
-  async function loadProgression() {
-    const payload = await api.getProgressionTop({ top: topProgression, scope, days: allTimeDaysParam });
-    setProgressionPayload(payload);
-  }
-
-  async function loadCompare(accounts = compareAccountsRef.current) {
-    if (!accounts.length) {
-      setComparePayload(null);
-      return;
+  useEffect(() => {
+    if (!selectedWeekEnd) return;
+    if (!weekOptions.some((w) => String(w?.weekEndUtc || "") === selectedWeekEnd)) {
+      setSelectedWeekEnd("");
     }
-    const scopeValue = scopeRef.current;
-    const daysValue = allTimeDaysParamRef.current;
-    const payload = await api.getCompare({ accounts, scope: scopeValue, days: daysValue });
-    setComparePayload(payload);
-  }
-
-  async function loadDelta() {
-    const payload = await api.getLeaderboardDelta({ top: topDelta, metric: deltaMetric, scope });
-    setDeltaPayload(payload);
-  }
-
-  async function loadAnomalies() {
-    const payload = await api.getAnomalies({ top: 20, minDeltaAbs: anomalyMinDelta, lookbackHours: 72, scope });
-    setAnomaliesPayload(payload);
-  }
-
-  async function loadResetImpact() {
-    const windowHours = Math.max(1, Math.min(24, Number(resetImpactWindow || 3)));
-    const payload = await api.getResetImpact({ top: 20, windowHours });
-    setResetImpactPayload(payload);
-  }
-
-  async function loadConsistency() {
-    const payload = await api.getConsistency({ top: consistencyTop, scope, days: allTimeDaysParam });
-    setConsistencyPayload(payload);
-  }
-
-  async function loadWatchlist() {
-    if (!effectiveWatchlistAccounts.length) {
-      setWatchlistPayload(null);
-      return;
-    }
-    const payload = await api.getWatchlist({
-      accounts: effectiveWatchlistAccounts,
-      minGain: watchlistMinGain,
-      minRankUp: watchlistMinRankUp,
-      scope,
-    });
-    setWatchlistPayload(payload);
-  }
-
-  async function loadHealth() {
-    const payload = await api.getHealth();
-    setHealthPayload(payload);
-    setAppwriteSyncRunning(Boolean(payload?.appwriteSync?.running));
-  }
-
-  async function loadWeeklyReport() {
-    setWeeklyReport(await api.getWeeklyReport());
-  }
-
-  async function refreshAll() {
-    await Promise.all([
-      loadOverview(),
-      loadProgression(),
-      loadCompare(),
-      loadDelta(),
-      loadAnomalies(),
-      loadResetImpact(),
-      loadConsistency(),
-      loadWatchlist(),
-      loadHealth(),
-      loadWeeklyReport(),
-    ]);
-  }
+  }, [selectedWeekEnd, weekOptions, setSelectedWeekEnd]);
 
   function addWatchlistAccount(value) {
     const normalized = String(value || "").trim();
@@ -438,172 +318,20 @@ export default function App() {
 
   function removeWatchlistAccount(account) {
     setWatchlistAccounts((prev) => prev.filter((v) => v !== account));
+  }  function handleLeaderboardPageSizeChange(size) {
+    setLeaderboardPageSize(size);
+    setLeaderboardPage(1);
   }
 
-  async function runManualSnapshot() {
-    if (snapshotRunning) return;
-    setSnapshotRunning(true);
-    addToast({ title: "Snapshot", description: "Running snapshot...", variant: "default", duration: 3000 });
-    try {
-      await api.runManualSnapshot();
-      await refreshAll();
-      addToast({ title: "Snapshot Complete", description: "Data has been refreshed.", variant: "success" });
-    } catch (error) {
-      addToast({ title: "Snapshot Failed", description: error.message, variant: "error" });
-    } finally {
-      setSnapshotRunning(false);
-    }
+  function handleMoversPageSizeChange(size) {
+    setMoversPageSize(size);
+    setMoversPage(1);
   }
 
-  async function runManualAppwriteSync() {
-    if (appwriteSyncRunning) return;
-    setAppwriteSyncRunning(true);
-    addToast({ title: "Appwrite Sync", description: "Running sync...", variant: "default", duration: 3000 });
-    try {
-      const payload = await api.runManualAppwriteSync();
-      const result = payload?.result || {};
-      const importedSnapshots = Math.max(0, Number(result.importedSnapshots || 0));
-      const importedEntries = Math.max(0, Number(result.importedEntries || 0));
-      const fetched = Math.max(0, Number(result.fetched || 0));
-
-      if (importedSnapshots > 0) {
-        await refreshAll();
-        addToast({
-          title: "Appwrite Sync Complete",
-          description: `Imported ${fmtNumber(importedSnapshots)} snapshot(s), ${fmtNumber(importedEntries)} entries.`,
-          variant: "success",
-        });
-      } else {
-        await loadHealth().catch(() => {});
-        const description =
-          fetched > 0
-            ? `Checked ${fmtNumber(fetched)} new snapshot(s), but none were imported.`
-            : "No new snapshots found in Appwrite.";
-        addToast({
-          title: "Appwrite Sync",
-          description,
-          variant: "default",
-          duration: 4500,
-        });
-      }
-    } catch (error) {
-      addToast({ title: "Appwrite Sync Failed", description: error.message, variant: "error" });
-    } finally {
-      setAppwriteSyncRunning(false);
-    }
+  function handleAnomaliesPageSizeChange(size) {
+    setAnomaliesPageSize(size);
+    setAnomaliesPage(1);
   }
-
-  async function fetchSnapshotStatus() {
-    try {
-      const status = await api.getSnapshotStatus();
-      setSnapshotRunning(Boolean(status.running));
-      let refreshed = false;
-      const previousFinishedAt = lastFinishedAtRef.current;
-      const currentFinishedAt = status.lastFinishedAt || null;
-      const firstSeenFinished = !previousFinishedAt && Boolean(currentFinishedAt);
-      const hasNewFinished =
-        Boolean(currentFinishedAt) &&
-        Boolean(previousFinishedAt) &&
-        currentFinishedAt !== previousFinishedAt;
-
-      lastFinishedAtRef.current = currentFinishedAt;
-
-      if ((firstSeenFinished || hasNewFinished) && Number(status.lastExitCode) === 0) {
-        await refreshAll();
-        refreshed = true;
-        if (status.lastTrigger === "hourly") {
-          addToast({ title: "Auto Snapshot", description: "Hourly snapshot done — data refreshed.", variant: "success" });
-        }
-      }
-
-      const health = await api.getHealth();
-      setHealthPayload(health);
-      setAppwriteSyncRunning(Boolean(health?.appwriteSync?.running));
-      const serverLatestSnapshotId = health?.latestSnapshot?.snapshotId || null;
-      const hasNewLatestSnapshot =
-        Boolean(serverLatestSnapshotId) && serverLatestSnapshotId !== latestSnapshotIdRef.current;
-      if (!refreshed && hasNewLatestSnapshot) {
-        await refreshAll();
-        if (health?.appwriteSyncEnabled) {
-          addToast({ title: "Appwrite Sync", description: "Snapshot synced — data refreshed.", variant: "success" });
-        }
-      }
-    } catch {
-      // Ignore transient polling errors.
-    }
-  }
-
-  /* ── Initial load ── */
-  useEffect(() => {
-    loadOverview()
-      .then(() => setInitialLoading(false))
-      .catch((err) => {
-        setInitialLoading(false);
-        console.error(err);
-      });
-  }, [topLeaderboard]);
-
-  useEffect(() => {
-    loadProgression().catch(console.error);
-  }, [topProgression, scope, allTimeRange]);
-
-  useEffect(() => {
-    loadCompare().catch(console.error);
-  }, [compareAccounts, scope, allTimeRange, hideAnonymized]);
-
-  useEffect(() => {
-    loadDelta().catch(console.error);
-  }, [topDelta, deltaMetric, scope]);
-
-  useEffect(() => {
-    loadAnomalies().catch(console.error);
-  }, [anomalyMinDelta, scope]);
-
-  useEffect(() => {
-    loadResetImpact().catch(console.error);
-  }, [resetImpactWindow]);
-
-  useEffect(() => {
-    loadConsistency().catch(console.error);
-  }, [consistencyTop, scope, allTimeRange]);
-
-  useEffect(() => {
-    loadWatchlist().catch(console.error);
-  }, [effectiveWatchlistAccounts, watchlistMinGain, watchlistMinRankUp, scope]);
-
-  useEffect(() => {
-    loadHealth().catch(console.error);
-    loadWeeklyReport().catch(console.error);
-  }, []);
-
-  /* ── Status polling ── */
-  useEffect(() => {
-    let cancelled = false;
-    const nextDelayMs = () => {
-      const baseMs = 45_000;
-      const jitterMs = Math.floor(Math.random() * 30_000);
-      return baseMs + jitterMs;
-    };
-    const schedule = (delay) => {
-      clearTimeout(statusPollTimerRef.current);
-      statusPollTimerRef.current = setTimeout(async () => {
-        if (cancelled) return;
-        try {
-          await fetchSnapshotStatus();
-        } catch {
-          // Ignore transient polling errors.
-        } finally {
-          if (!cancelled) schedule(nextDelayMs());
-        }
-      }, delay);
-    };
-    const initialJitter = Math.floor(Math.random() * 12_000);
-    schedule(initialJitter);
-    return () => {
-      cancelled = true;
-      clearTimeout(statusPollTimerRef.current);
-    };
-  }, []);
 
   /* ── Autocomplete ── */
   useEffect(() => {
@@ -653,67 +381,41 @@ export default function App() {
     };
   }, [watchlistInput, hideAnonymized]);
 
-  /* ── Filtered / computed data ── */
-  const filteredEntries = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const base = entries.filter((e) => isVisibleAccount(e.accountName));
-    if (!q) return base;
-    return base.filter((e) => e.accountName.toLowerCase().includes(q));
-  }, [entries, search, hideAnonymized]);
+  const {
+    searchQuery,
+    filteredEntries,
+    filteredProgressionPayload,
+    filteredComparePayload,
+    filteredDeltaRows,
+    filteredAnomalies,
+    filteredResetImpactRows,
+    filteredConsistencyRows,
+    filteredWatchlistRows,
+  } = useAccountSearchFilter({
+    entries,
+    search,
+    hideAnonymized,
+    isVisibleAccount,
+    progressionPayload,
+    comparePayload,
+    deltaPayload,
+    anomaliesPayload,
+    resetImpactPayload,
+    consistencyPayload,
+    watchlistPayload,
+  });
 
   useEffect(() => {
     setLeaderboardPage(1);
-  }, [search, hideAnonymized, topLeaderboard, leaderboardPageSize]);
+  }, [searchQuery, hideAnonymized, topLeaderboard]);
 
   useEffect(() => {
     setMoversPage(1);
-  }, [topDelta, deltaMetric, scope, hideAnonymized, moversPageSize]);
+  }, [topDelta, deltaMetric, scope, hideAnonymized]);
 
   useEffect(() => {
     setAnomaliesPage(1);
-  }, [anomalyMinDelta, scope, hideAnonymized, anomaliesPageSize]);
-
-  const filteredProgressionPayload = useMemo(() => {
-    if (!hideAnonymized || !progressionPayload?.series) return progressionPayload;
-    const series = Object.fromEntries(
-      Object.entries(progressionPayload.series).filter(([name]) => isVisibleAccount(name))
-    );
-    return { ...progressionPayload, series };
-  }, [progressionPayload, hideAnonymized]);
-
-  const filteredComparePayload = useMemo(() => {
-    if (!hideAnonymized || !comparePayload?.series) return comparePayload;
-    const series = Object.fromEntries(
-      Object.entries(comparePayload.series).filter(([name]) => isVisibleAccount(name))
-    );
-    const accounts = (comparePayload.accounts || []).filter((a) => isVisibleAccount(a));
-    return { ...comparePayload, accounts, series };
-  }, [comparePayload, hideAnonymized]);
-
-  const filteredDeltaRows = useMemo(() => {
-    const rows = deltaPayload?.rows || [];
-    return rows.filter((r) => isVisibleAccount(r.accountName));
-  }, [deltaPayload, hideAnonymized]);
-
-  const filteredAnomalies = useMemo(() => {
-    const rows = anomaliesPayload?.anomalies || [];
-    return rows.filter((r) => isVisibleAccount(r.accountName));
-  }, [anomaliesPayload, hideAnonymized]);
-
-  const filteredResetImpactRows = useMemo(() => {
-    const rows = resetImpactPayload?.rows || [];
-    return rows.filter((r) => isVisibleAccount(r.accountName));
-  }, [resetImpactPayload, hideAnonymized]);
-
-  const filteredConsistencyRows = useMemo(() => {
-    const rows = consistencyPayload?.rows || [];
-    return rows.filter((r) => isVisibleAccount(r.accountName));
-  }, [consistencyPayload, hideAnonymized]);
-
-  const filteredWatchlistRows = useMemo(() => {
-    const rows = watchlistPayload?.rows || [];
-    return rows.filter((r) => isVisibleAccount(r.accountName || r.requestedAccount));
-  }, [watchlistPayload, hideAnonymized]);
+  }, [anomalyMinDelta, scope, hideAnonymized]);
 
   /* ── Sortable tables ── */
   const leaderboardSort = useSortable(filteredEntries, { key: "rank", dir: "asc" });
@@ -799,6 +501,45 @@ export default function App() {
     });
   }, [filteredComparePayload, timeZone]);
 
+  const compareProjectionShare = useMemo(() => {
+    if (!comparePayload?.weekWindow?.endUtc) return { leader: null, rows: [] };
+    if (!filteredComparePayload?.series) return { leader: null, rows: [] };
+    const endMs = Date.parse(comparePayload.weekWindow.endUtc);
+    if (!Number.isFinite(endMs)) return { leader: null, rows: [] };
+
+    const rows = [];
+    for (const [account, points] of Object.entries(filteredComparePayload.series)) {
+      const ordered = [...(points || [])].sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+      if (ordered.length < 2) continue;
+      const first = ordered[0];
+      const last = ordered[ordered.length - 1];
+      const firstMs = Date.parse(first.createdAt);
+      const lastMs = Date.parse(last.createdAt);
+      const firstWeekly = Number(first?.weeklyKills || 0);
+      const lastWeekly = Number(last?.weeklyKills || 0);
+      if (!Number.isFinite(firstMs) || !Number.isFinite(lastMs) || lastMs <= firstMs) continue;
+      if (!Number.isFinite(firstWeekly) || !Number.isFinite(lastWeekly)) continue;
+
+      const elapsedHours = Math.max(0, (lastMs - firstMs) / 3600000);
+      const weeklyGain = Math.max(0, lastWeekly - firstWeekly);
+      const avgPerHour = elapsedHours > 0 ? weeklyGain / elapsedHours : 0;
+      const remainingHours = Math.max(0, (endMs - lastMs) / 3600000);
+      const projectedGain = avgPerHour * remainingHours;
+      const projectedWeekly = lastWeekly + projectedGain;
+
+      rows.push({
+        account,
+        avgPerHour,
+        weeklyGain,
+        projectedGain,
+        projectedWeekly,
+      });
+    }
+
+    const sortedRows = rows.sort((a, b) => b.projectedWeekly - a.projectedWeekly);
+    return { leader: sortedRows[0] || null, rows: sortedRows };
+  }, [comparePayload, filteredComparePayload]);
+
   const movers = useMemo(() => {
     const rows = filteredDeltaRows;
     if (!rows.length) return { climbers: [], decliners: [] };
@@ -866,39 +607,9 @@ export default function App() {
     deltaPayload,
   });
 
-  const leaderboardTotalRows = leaderboardSort.sorted.length;
-  const leaderboardTotalPages = Math.max(1, Math.ceil(leaderboardTotalRows / leaderboardPageSize));
-  const clampedLeaderboardPage = Math.min(leaderboardPage, leaderboardTotalPages);
-  const leaderboardVisibleRows = useMemo(() => {
-    const start = (clampedLeaderboardPage - 1) * leaderboardPageSize;
-    return leaderboardSort.sorted.slice(start, start + leaderboardPageSize);
-  }, [leaderboardSort.sorted, clampedLeaderboardPage, leaderboardPageSize]);
-  const leaderboardStartIndex = leaderboardTotalRows ? (clampedLeaderboardPage - 1) * leaderboardPageSize + 1 : 0;
-  const leaderboardEndIndex = leaderboardTotalRows
-    ? Math.min(clampedLeaderboardPage * leaderboardPageSize, leaderboardTotalRows)
-    : 0;
-
-  const moversTotalRows = deltaSort.sorted.length;
-  const moversTotalPages = Math.max(1, Math.ceil(moversTotalRows / moversPageSize));
-  const clampedMoversPage = Math.min(moversPage, moversTotalPages);
-  const moversVisibleRows = useMemo(() => {
-    const start = (clampedMoversPage - 1) * moversPageSize;
-    return deltaSort.sorted.slice(start, start + moversPageSize);
-  }, [deltaSort.sorted, clampedMoversPage, moversPageSize]);
-  const moversStartIndex = moversTotalRows ? (clampedMoversPage - 1) * moversPageSize + 1 : 0;
-  const moversEndIndex = moversTotalRows ? Math.min(clampedMoversPage * moversPageSize, moversTotalRows) : 0;
-
-  const anomaliesTotalRows = anomalySort.sorted.length;
-  const anomaliesTotalPages = Math.max(1, Math.ceil(anomaliesTotalRows / anomaliesPageSize));
-  const clampedAnomaliesPage = Math.min(anomaliesPage, anomaliesTotalPages);
-  const anomaliesVisibleRows = useMemo(() => {
-    const start = (clampedAnomaliesPage - 1) * anomaliesPageSize;
-    return anomalySort.sorted.slice(start, start + anomaliesPageSize);
-  }, [anomalySort.sorted, clampedAnomaliesPage, anomaliesPageSize]);
-  const anomaliesStartIndex = anomaliesTotalRows ? (clampedAnomaliesPage - 1) * anomaliesPageSize + 1 : 0;
-  const anomaliesEndIndex = anomaliesTotalRows
-    ? Math.min(clampedAnomaliesPage * anomaliesPageSize, anomaliesTotalRows)
-    : 0;
+  const leaderboardPagination = usePaginatedRows(leaderboardSort.sorted, leaderboardPage, leaderboardPageSize);
+  const moversPagination = usePaginatedRows(deltaSort.sorted, moversPage, moversPageSize);
+  const anomaliesPagination = usePaginatedRows(anomalySort.sorted, anomaliesPage, anomaliesPageSize);
 
   const shareSettings = useShareSettings({
     addToast,
@@ -921,30 +632,22 @@ export default function App() {
       resetImpactRows: resetImpactSort.sorted,
       consistencyRows: consistencySort.sorted,
       compareSummaries,
+      compareProjectionShare,
     },
   });
 
   /* ── CSV exports ── */
   function exportLeaderboardCsv() {
-    const headers = [
-      { key: "rank", label: "Rank" },
-      { key: "accountName", label: "Account" },
-      { key: "weeklyKills", label: "WeeklyKills" },
-      { key: "totalKills", label: "TotalKills" },
-    ];
-    downloadCsv(`vox-leaderboard-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.csv`, headers, filteredEntries);
+    downloadCsv(
+      `vox-leaderboard-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.csv`,
+      LEADERBOARD_CSV_HEADERS,
+      filteredEntries
+    );
     addToast({ title: "Export", description: "Leaderboard CSV downloaded.", variant: "success", duration: 3000 });
   }
 
   function exportDeltaCsv() {
-    const headers = [
-      { key: "latestRank", label: "LatestRank" },
-      { key: "previousRank", label: "PreviousRank" },
-      { key: "rankChange", label: "RankChange" },
-      { key: "accountName", label: "Account" },
-      { key: "weeklyKillsDelta", label: "WeeklyDelta" },
-    ];
-    if (showTotalDelta) headers.push({ key: "totalKillsDelta", label: "TotalDelta" });
+    const headers = buildDeltaCsvHeaders(showTotalDelta);
     downloadCsv(
       `vox-delta-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.csv`,
       headers,
@@ -954,27 +657,10 @@ export default function App() {
   }
 
   function exportAnomaliesCsv() {
-    const headers = [
-      { key: "createdAt", label: "Time" },
-      { key: "accountName", label: "Account" },
-      { key: "direction", label: "Type" },
-      { key: "latestDelta", label: "LatestDelta" },
-      { key: "baselineAvg", label: "Baseline" },
-      { key: "deviation", label: "Deviation" },
-      { key: "deviationPct", label: "DeviationPct" },
-    ];
-    const rows = filteredAnomalies.map((row) => ({
-      createdAt: formatTimestamp(row.createdAt, timeZone),
-      accountName: row.accountName,
-      direction: row.direction ? row.direction.charAt(0).toUpperCase() + row.direction.slice(1) : "-",
-      latestDelta: row.latestDelta,
-      baselineAvg: row.baselineAvg,
-      deviation: row.deviation,
-      deviationPct: row.deviationPct,
-    }));
+    const rows = mapAnomalyRowsForCsv(filteredAnomalies, timeZone);
     downloadCsv(
       `vox-anomalies-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.csv`,
-      headers,
+      ANOMALIES_CSV_HEADERS,
       rows
     );
     addToast({ title: "Export", description: "Anomalies CSV downloaded.", variant: "success", duration: 3000 });
@@ -1021,6 +707,18 @@ export default function App() {
             <h1>Vox of the Mists</h1>
           </div>
           <div className="toolbar">
+            <select
+              value={selectedWeekEnd}
+              onChange={(e) => setSelectedWeekEnd(e.target.value)}
+              title="Select archived week"
+            >
+              <option value="">Current Live Week</option>
+              {weekOptions.map((w) => (
+                <option key={w.weekEndUtc} value={w.weekEndUtc}>
+                  {w.label}
+                </option>
+              ))}
+            </select>
             <button className="btn ghost" onClick={shareSettings.exportShareSnapshotHtml}>
               Share Snapshot
             </button>
@@ -1053,7 +751,7 @@ export default function App() {
             search={search}
             setSearch={setSearch}
             leaderboardPageSize={leaderboardPageSize}
-            setLeaderboardPageSize={setLeaderboardPageSize}
+            setLeaderboardPageSize={handleLeaderboardPageSizeChange}
             topLeaderboard={topLeaderboard}
             setTopLeaderboard={setTopLeaderboard}
             canRunManualSnapshot={canRunManualSnapshot}
@@ -1069,17 +767,17 @@ export default function App() {
             exportLeaderboardCsv={exportLeaderboardCsv}
             latestSnapshot={latestSnapshot}
             timeZone={timeZone}
-            leaderboardStartIndex={leaderboardStartIndex}
-            leaderboardEndIndex={leaderboardEndIndex}
-            leaderboardTotalRows={leaderboardTotalRows}
-            clampedLeaderboardPage={clampedLeaderboardPage}
-            leaderboardTotalPages={leaderboardTotalPages}
+            leaderboardStartIndex={leaderboardPagination.startIndex}
+            leaderboardEndIndex={leaderboardPagination.endIndex}
+            leaderboardTotalRows={leaderboardPagination.totalRows}
+            clampedLeaderboardPage={leaderboardPagination.clampedPage}
+            leaderboardTotalPages={leaderboardPagination.totalPages}
             onPrevPage={() => setLeaderboardPage((p) => Math.max(1, p - 1))}
-            onNextPage={() => setLeaderboardPage((p) => Math.min(leaderboardTotalPages, p + 1))}
+            onNextPage={() => setLeaderboardPage((p) => Math.min(leaderboardPagination.totalPages, p + 1))}
             healthPayload={healthPayload}
             initialLoading={initialLoading}
             leaderboardSort={leaderboardSort}
-            leaderboardVisibleRows={leaderboardVisibleRows}
+            leaderboardVisibleRows={leaderboardPagination.visibleRows}
           />
 
           <Suspense fallback={<SectionFallback />}>
@@ -1089,7 +787,7 @@ export default function App() {
               showTotalDelta={showTotalDelta}
               setShowTotalDelta={setShowTotalDelta}
               moversPageSize={moversPageSize}
-              setMoversPageSize={setMoversPageSize}
+              setMoversPageSize={handleMoversPageSizeChange}
               topDelta={topDelta}
               setTopDelta={setTopDelta}
               exportDeltaCsv={exportDeltaCsv}
@@ -1097,15 +795,15 @@ export default function App() {
               deltaPayload={deltaPayload}
               timeZone={timeZone}
               movers={movers}
-              moversStartIndex={moversStartIndex}
-              moversEndIndex={moversEndIndex}
-              moversTotalRows={moversTotalRows}
-              clampedMoversPage={clampedMoversPage}
-              moversTotalPages={moversTotalPages}
+              moversStartIndex={moversPagination.startIndex}
+              moversEndIndex={moversPagination.endIndex}
+              moversTotalRows={moversPagination.totalRows}
+              clampedMoversPage={moversPagination.clampedPage}
+              moversTotalPages={moversPagination.totalPages}
               onPrevPage={() => setMoversPage((p) => Math.max(1, p - 1))}
-              onNextPage={() => setMoversPage((p) => Math.min(moversTotalPages, p + 1))}
+              onNextPage={() => setMoversPage((p) => Math.min(moversPagination.totalPages, p + 1))}
               deltaSort={deltaSort}
-              moversVisibleRows={moversVisibleRows}
+              moversVisibleRows={moversPagination.visibleRows}
             />
           </Suspense>
 
@@ -1114,18 +812,18 @@ export default function App() {
               anomalyMinDelta={anomalyMinDelta}
               setAnomalyMinDelta={setAnomalyMinDelta}
               anomaliesPageSize={anomaliesPageSize}
-              setAnomaliesPageSize={setAnomaliesPageSize}
+              setAnomaliesPageSize={handleAnomaliesPageSizeChange}
               exportAnomaliesCsv={exportAnomaliesCsv}
               anomalySort={anomalySort}
               timeZone={timeZone}
-              anomaliesStartIndex={anomaliesStartIndex}
-              anomaliesEndIndex={anomaliesEndIndex}
-              anomaliesTotalRows={anomaliesTotalRows}
-              clampedAnomaliesPage={clampedAnomaliesPage}
-              anomaliesTotalPages={anomaliesTotalPages}
+              anomaliesStartIndex={anomaliesPagination.startIndex}
+              anomaliesEndIndex={anomaliesPagination.endIndex}
+              anomaliesTotalRows={anomaliesPagination.totalRows}
+              clampedAnomaliesPage={anomaliesPagination.clampedPage}
+              anomaliesTotalPages={anomaliesPagination.totalPages}
               onPrevPage={() => setAnomaliesPage((p) => Math.max(1, p - 1))}
-              onNextPage={() => setAnomaliesPage((p) => Math.min(anomaliesTotalPages, p + 1))}
-              anomaliesVisibleRows={anomaliesVisibleRows}
+              onNextPage={() => setAnomaliesPage((p) => Math.min(anomaliesPagination.totalPages, p + 1))}
+              anomaliesVisibleRows={anomaliesPagination.visibleRows}
             />
           </Suspense>
 
@@ -1160,6 +858,24 @@ export default function App() {
               watchlistMinRankUp={watchlistMinRankUp}
               setWatchlistMinRankUp={setWatchlistMinRankUp}
               watchlistSort={watchlistSort}
+            />
+          </Suspense>
+
+          <Suspense fallback={<SectionFallback />}>
+            <GuildCheckSection
+              query={guildCheck.query}
+              setQuery={guildCheck.setQuery}
+              region={guildCheck.region}
+              setRegion={guildCheck.setRegion}
+              running={guildCheck.running}
+              onRun={guildCheck.runSearch}
+              status={guildCheck.status}
+              rows={guildCheck.rows}
+              page={guildCheck.page}
+              pageSize={guildCheck.pageSize}
+              setPageSize={guildCheck.setPageSize}
+              onPrevPage={guildCheck.onPrevPage}
+              onNextPage={guildCheck.onNextPage}
             />
           </Suspense>
 
@@ -1227,6 +943,10 @@ export default function App() {
     </>
   );
 }
+
+
+
+
 
 
 

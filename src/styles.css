@@ -366,6 +366,7 @@ select option {
   justify-content: space-between;
   gap: 8px;
   flex-wrap: wrap;
+  margin-bottom: 10px;
 }
 
 .settings-overlay {
@@ -1102,6 +1103,7 @@ body.dark .toast {
 [id="reset-impact"],
 [id="consistency"],
 [id="watchlist"],
+[id="guild-check"],
 [id="progression"],
 [id="compare"] {
   scroll-margin-top: 64px;

@@ -146,6 +146,7 @@ All supported server variables are listed in `.env.example`.
 - `APPWRITE_SYNC_HOURLY_ALIGNED=1`: run one sync per hour aligned to a fixed UTC minute
 - `APPWRITE_SYNC_TARGET_MINUTE=12`: UTC minute used by aligned hourly sync
 - `APPWRITE_SYNC_ENTRY_BATCH_SIZE=20`: snapshot IDs grouped per entries fetch during Appwrite import
+- `APPWRITE_SYNC_STARTUP_MIN_STALE_MINUTES=50`: skip startup sync when local snapshot is recent (`0` disables skip)
 - `APPWRITE_BACKFILL_ENABLED=0`: optional server-side function trigger guard (disabled by default)
 - `APPWRITE_BACKFILL_TARGET_MINUTE=30`: UTC minute used by backfill guard
 - `APPWRITE_FUNCTION_ID=`: Appwrite Function ID used by backfill guard execution
@@ -210,6 +211,7 @@ APPWRITE_SYNC_INTERVAL_MINUTES=60
 APPWRITE_SYNC_HOURLY_ALIGNED=1
 APPWRITE_SYNC_TARGET_MINUTE=12
 APPWRITE_SYNC_ENTRY_BATCH_SIZE=20
+APPWRITE_SYNC_STARTUP_MIN_STALE_MINUTES=50
 API_CACHE_MAX_ENTRIES=1000
 ```
 
@@ -333,26 +335,28 @@ For `scope=week`, data is filtered to GW2 reset week:
 
 - `GET /api/latest?top=100`
 - `GET /api/snapshots`
+- `GET /api/weeks` (selectable archived weeks anchored by Friday `18:45` Brussels snapshot)
 - `GET /api/accounts?query=...&limit=...`
 - `GET /api/player/:account/history`
 
 ### Charts
 
-- `GET /api/progression/top?top=10&scope=week|all&days=30`
-- `GET /api/compare?accounts=A,B&scope=week|all&days=30`
+- `GET /api/progression/top?top=10&scope=week|all&days=30&weekEnd=ISO`
+- `GET /api/compare?accounts=A,B&scope=week|all&days=30&weekEnd=ISO`
 
 Notes:
 - `days` is optional and used to keep all-time queries fast.
 - UI defaults to `Current Week` for speed.
+- `weekEnd` is optional; when provided, week-scoped analytics use that archived week window instead of the live current week.
 
 ### Insights
 
-- `GET /api/leaderboard/delta?top=30&metric=weeklyKills|totalKills&scope=week|all`
-- `GET /api/anomalies?top=20&minDeltaAbs=80&lookbackHours=72&scope=week|all`
-- `GET /api/reset-impact?top=20&windowHours=1..24`
-- `GET /api/consistency?top=20&scope=week|all&days=30`
-- `GET /api/watchlist?accounts=A,B&minGain=30&minRankUp=3&scope=week|all`
-- `GET /api/report/weekly`
+- `GET /api/leaderboard/delta?top=30&metric=weeklyKills|totalKills&scope=week|all&weekEnd=ISO`
+- `GET /api/anomalies?top=20&minDeltaAbs=80&lookbackHours=72&scope=week|all&weekEnd=ISO`
+- `GET /api/reset-impact?top=20&windowHours=1..24&weekEnd=ISO`
+- `GET /api/consistency?top=20&scope=week|all&days=30&weekEnd=ISO`
+- `GET /api/watchlist?accounts=A,B&minGain=30&minRankUp=3&scope=week|all&weekEnd=ISO`
+- `GET /api/report/weekly?weekEnd=ISO`
 
 ### Operations
 

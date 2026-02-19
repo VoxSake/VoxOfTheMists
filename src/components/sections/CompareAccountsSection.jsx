@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { ErrorBoundary } from "../ErrorBoundary";
-import { fmtNumber, formatTimestamp } from "../../utils";
+import { fmtNumber, formatTimestamp, metricLabel } from "../../utils";
+import { useWeeklyProjection } from "../../hooks/useWeeklyProjection";
 
 const LineChart = lazy(() => import("../LineChart").then((m) => ({ default: m.LineChart })));
 
@@ -23,6 +24,14 @@ export function CompareAccountsSection({
   themeDark,
   compareSummaries,
 }) {
+  const { projection, weeklyProjectionByAccount, sortedCompareSummaries } = useWeeklyProjection({
+    scope,
+    comparePayload,
+    filteredComparePayload,
+    metric,
+    compareSummaries,
+  });
+
   return (
     <ErrorBoundary name="Compare Accounts">
       <section className="card" id="compare">
@@ -66,7 +75,7 @@ export function CompareAccountsSection({
           <div className="toolbar compact">
             <span className="muted">Chart Baseline</span>
             <select value={compareBaseline} onChange={(e) => setCompareBaseline(e.target.value)}>
-              <option value="raw">Raw</option>
+              <option value="raw">Absolute Values</option>
               <option value="delta">Delta from Start</option>
               <option value="index100">Indexed (100 at start)</option>
             </select>
@@ -91,23 +100,56 @@ export function CompareAccountsSection({
             {allTimeRange === "full" ? "From first snapshot" : allTimeRange === "90d" ? "Recent 90 days" : "Recent 30 days"}
           </p>
         ) : null}
-        <div className="chart-area">
-          <Suspense
-            fallback={
-              <div className="chart-empty-state">
-                <p>Loading chart...</p>
-              </div>
-            }
-          >
-            <LineChart
-              payload={filteredComparePayload}
-              metric={metric}
-              timeZone={timeZone}
-              themeDark={themeDark}
-              baselineMode={compareBaseline}
-            />
-          </Suspense>
-        </div>
+        {projection ? (
+          <div className="activity-summary">
+            <h3>Current Week + Projection</h3>
+            <p className="muted">
+              Projection uses each selected account&apos;s average {metricLabel(metric).toLowerCase()} gain per hour this week, extended
+              to {formatTimestamp(projection.endIso, timeZone)}.
+            </p>
+            {projection.leader ? (
+              <p className="muted">
+                Projected leader: {projection.leader.account} ({fmtNumber(projection.leader.projectedValue)};{" "}
+                {fmtNumber(projection.leader.avgPerHour)}/h)
+              </p>
+            ) : null}
+            <div className="chart-area">
+              <Suspense
+                fallback={
+                  <div className="chart-empty-state">
+                    <p>Loading chart...</p>
+                  </div>
+                }
+              >
+                <LineChart
+                  payload={projection.payload}
+                  metric={metric}
+                  timeZone={timeZone}
+                  themeDark={themeDark}
+                  baselineMode="raw"
+                />
+              </Suspense>
+            </div>
+          </div>
+        ) : (
+          <div className="chart-area">
+            <Suspense
+              fallback={
+                <div className="chart-empty-state">
+                  <p>Loading chart...</p>
+                </div>
+              }
+            >
+              <LineChart
+                payload={filteredComparePayload}
+                metric={metric}
+                timeZone={timeZone}
+                themeDark={themeDark}
+                baselineMode={compareBaseline}
+              />
+            </Suspense>
+          </div>
+        )}
         {compareSummaries.length > 0 ? (
           <div className="activity-summary">
             <h3>Activity Summary (Weekly Kill Deltas)</h3>
@@ -116,9 +158,10 @@ export function CompareAccountsSection({
               20:01-22:00, Evening 22:01-00:00
             </p>
             <div className="summary-grid">
-              {compareSummaries.map((s) => (
+              {sortedCompareSummaries.map((s) => (
                 <article key={s.account} className="summary-card">
                   {(() => {
+                    const weeklyStats = weeklyProjectionByAccount[s.account];
                     const totalHours =
                       s.hoursByDay.Friday +
                       s.hoursByDay.Saturday +
@@ -200,6 +243,24 @@ export function CompareAccountsSection({
                             </span>
                           </div>
                         </div>
+                        {weeklyStats ? (
+                          <div className="summary-line">
+                            <span className="summary-label">Weekly Pace & Projection</span>
+                            <div className="summary-chips">
+                              <span className="summary-chip">
+                                Avg kills/h <strong>{fmtNumber(weeklyStats.avgPerHour)}</strong>
+                              </span>
+                              <span className="summary-chip">
+                                Weekly kills gain <strong>{fmtNumber(weeklyStats.weeklyGain)}</strong>
+                              </span>
+                              <span className="summary-chip summary-chip-total">
+                                Projected at reset{" "}
+                                <strong>{fmtNumber(weeklyStats.projectedWeekly)}</strong>{" "}
+                                <strong>(+{fmtNumber(weeklyStats.projectedGain)})</strong>
+                              </span>
+                            </div>
+                          </div>
+                        ) : null}
                       </>
                     );
                   })()}

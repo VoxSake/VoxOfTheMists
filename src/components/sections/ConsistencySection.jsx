@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { SortTh } from "../SortTh";
 import { fmtNumber } from "../../utils";
@@ -7,19 +8,49 @@ export function ConsistencySection({
   setConsistencyTop,
   consistencySort,
 }) {
+  const [consistencyTopDraft, setConsistencyTopDraft] = useState(String(consistencyTop));
+
+  useEffect(() => {
+    setConsistencyTopDraft(String(consistencyTop));
+  }, [consistencyTop]);
+
+  const commitConsistencyTop = (rawValue) => {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed)) {
+      setConsistencyTopDraft(String(consistencyTop));
+      return;
+    }
+    const clamped = Math.max(5, Math.min(100, Math.floor(parsed)));
+    setConsistencyTop(clamped);
+    setConsistencyTopDraft(String(clamped));
+  };
+
+  const handleConsistencyTopChange = (rawValue) => {
+    setConsistencyTopDraft(rawValue);
+    if (!rawValue) return;
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return;
+    if (parsed < 5 || parsed > 100) return;
+    setConsistencyTop(parsed);
+  };
+
   return (
     <ErrorBoundary name="Consistency Score">
       <section className="card" id="consistency">
         <div className="section-head">
           <h2>Consistency Score</h2>
           <div className="toolbar compact">
-            <span className="muted">Top</span>
+            <span className="muted">Top Accounts</span>
             <input
               type="number"
               min={5}
               max={100}
-              value={consistencyTop}
-              onChange={(e) => setConsistencyTop(Math.max(5, Math.min(100, Number(e.target.value || 20))))}
+              value={consistencyTopDraft}
+              onChange={(e) => handleConsistencyTopChange(e.target.value)}
+              onBlur={(e) => commitConsistencyTop(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
             />
           </div>
         </div>

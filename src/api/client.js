@@ -45,43 +45,54 @@ export const api = {
   getSnapshots() {
     return requestJson("/api/snapshots");
   },
-  getProgressionTop({ top, scope, days = null }) {
+  getProgressionTop({ top, scope, days = null, weekEnd = null }) {
     const daysQuery = days ? `&days=${days}` : "";
-    return requestJson(`/api/progression/top?top=${top}&scope=${encodeURIComponent(scope)}${daysQuery}`);
+    const weekEndQuery = weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
+    return requestJson(`/api/progression/top?top=${top}&scope=${encodeURIComponent(scope)}${daysQuery}${weekEndQuery}`);
   },
-  getCompare({ accounts, scope, days = null }) {
+  getCompare({ accounts, scope, days = null, weekEnd = null }) {
     const daysQuery = days ? `&days=${days}` : "";
+    const weekEndQuery = weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
     return requestJson(
-      `/api/compare?accounts=${encodeURIComponent(accounts.join(","))}&scope=${encodeURIComponent(scope)}${daysQuery}`
+      `/api/compare?accounts=${encodeURIComponent(accounts.join(","))}&scope=${encodeURIComponent(scope)}${daysQuery}${weekEndQuery}`
     );
   },
-  getLeaderboardDelta({ top, metric, scope }) {
+  getLeaderboardDelta({ top, metric, scope, weekEnd = null }) {
+    const weekEndQuery = weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
     return requestJson(
-      `/api/leaderboard/delta?top=${top}&metric=${encodeURIComponent(metric)}&scope=${encodeURIComponent(scope)}`
+      `/api/leaderboard/delta?top=${top}&metric=${encodeURIComponent(metric)}&scope=${encodeURIComponent(scope)}${weekEndQuery}`
     );
   },
-  getAnomalies({ top, minDeltaAbs, lookbackHours, scope }) {
+  getAnomalies({ top, minDeltaAbs, lookbackHours, scope, weekEnd = null }) {
+    const weekEndQuery = weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
     return requestJson(
-      `/api/anomalies?top=${top}&minDeltaAbs=${minDeltaAbs}&lookbackHours=${lookbackHours}&scope=${encodeURIComponent(scope)}`
+      `/api/anomalies?top=${top}&minDeltaAbs=${minDeltaAbs}&lookbackHours=${lookbackHours}&scope=${encodeURIComponent(scope)}${weekEndQuery}`
     );
   },
-  getResetImpact({ top, windowHours }) {
-    return requestJson(`/api/reset-impact?top=${top}&windowHours=${windowHours}`);
+  getResetImpact({ top, windowHours, weekEnd = null }) {
+    const weekEndQuery = weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
+    return requestJson(`/api/reset-impact?top=${top}&windowHours=${windowHours}${weekEndQuery}`);
   },
-  getConsistency({ top, scope, days = null }) {
+  getConsistency({ top, scope, days = null, weekEnd = null }) {
     const daysQuery = days ? `&days=${days}` : "";
-    return requestJson(`/api/consistency?top=${top}&scope=${encodeURIComponent(scope)}${daysQuery}`);
+    const weekEndQuery = weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
+    return requestJson(`/api/consistency?top=${top}&scope=${encodeURIComponent(scope)}${daysQuery}${weekEndQuery}`);
   },
-  getWatchlist({ accounts, minGain, minRankUp, scope }) {
+  getWatchlist({ accounts, minGain, minRankUp, scope, weekEnd = null }) {
+    const weekEndQuery = weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
     return requestJson(
-      `/api/watchlist?accounts=${encodeURIComponent(accounts.join(","))}&minGain=${minGain}&minRankUp=${minRankUp}&scope=${encodeURIComponent(scope)}`
+      `/api/watchlist?accounts=${encodeURIComponent(accounts.join(","))}&minGain=${minGain}&minRankUp=${minRankUp}&scope=${encodeURIComponent(scope)}${weekEndQuery}`
     );
   },
   getHealth() {
     return requestJson("/api/health");
   },
-  getWeeklyReport() {
-    return requestJson("/api/report/weekly");
+  getWeeklyReport({ weekEnd = null } = {}) {
+    const weekEndQuery = weekEnd ? `?weekEnd=${encodeURIComponent(weekEnd)}` : "";
+    return requestJson(`/api/report/weekly${weekEndQuery}`);
+  },
+  getWeeks() {
+    return requestJson("/api/weeks");
   },
   getSnapshotStatus() {
     return requestJson("/api/snapshot/status");
@@ -94,6 +105,17 @@ export const api = {
   },
   runManualAppwriteSync() {
     return postWithWriteAuth("/api/sync/run", {});
+  },
+  runGuildSearch({ query, region = "eu", maxPages = 20, perPage = 100 }) {
+    return postWithWriteAuth("/api/guild-search/run", {
+      query,
+      region,
+      maxPages,
+      perPage,
+    });
+  },
+  getGuildSearchJob({ jobId, page = 1, pageSize = 50 }) {
+    return requestJson(`/api/guild-search/${encodeURIComponent(jobId)}?page=${page}&pageSize=${pageSize}`);
   },
   shareSnapshotToDiscord({ webhookUrl, filename, html, content = "" }) {
     return postWithWriteAuth("/api/share/discord", {
