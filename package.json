@@ -14,7 +14,8 @@
     "build": "vite build",
     "prestart": "npm run build",
     "start": "cross-env NODE_ENV=production node server.js",
-    "start:api": "cross-env NODE_ENV=production node server.js"
+    "start:api": "cross-env NODE_ENV=production node server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@fastify/helmet": "^13.0.2",

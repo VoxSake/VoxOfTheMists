@@ -232,7 +232,7 @@ export function useDashboardData({
     } finally {
       setAppwriteSyncRunning(false);
     }
-  }, [appwriteSyncRunning, addToast, refreshAll, loadHealth]);
+  }, [appwriteSyncRunning, latestSnapshot, addToast, refreshAll, loadHealth]);
 
   const fetchSnapshotStatus = useCallback(async () => {
     try {

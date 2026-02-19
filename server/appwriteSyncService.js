@@ -37,6 +37,7 @@ function createAppwriteSyncService({
   let appwriteSyncTimer = null;
   let appwriteBackfillTimer = null;
   let nextAppwriteSyncAtIso = null;
+  const appwriteBase = endpoint.endsWith("/v1") ? endpoint : `${endpoint}/v1`;
 
   const status = {
     enabled,
@@ -71,15 +72,10 @@ function createAppwriteSyncService({
     return null;
   }
 
-  function appwriteApiBase() {
-    return endpoint.endsWith("/v1") ? endpoint : `${endpoint}/v1`;
-  }
-
   function getAppwriteDatabasesClient() {
     if (appwriteDatabasesClient) return appwriteDatabasesClient;
-    const fullEndpoint = endpoint.endsWith("/v1") ? endpoint : `${endpoint}/v1`;
     const client = new appwriteSdk.Client()
-      .setEndpoint(fullEndpoint)
+      .setEndpoint(appwriteBase)
       .setProject(projectId)
       .setKey(apiKey);
     appwriteDatabasesClient = new appwriteSdk.Databases(client);
@@ -256,7 +252,7 @@ function createAppwriteSyncService({
   }
 
   async function triggerAppwriteFunctionExecution() {
-    const callEndpoint = `${appwriteApiBase()}/functions/${encodeURIComponent(functionId)}/executions`;
+    const callEndpoint = `${appwriteBase}/functions/${encodeURIComponent(functionId)}/executions`;
     const res = await fetch(callEndpoint, {
       method: "POST",
       headers: {

@@ -430,9 +430,29 @@ Cache invalidates after successful snapshot and maintenance cleanup.
 npm run dev
 npm run build
 npm start
+npm test
 npm audit
 python scraper/scrape_gw2mists.py --pages 3 --per-page 100 --region eu --no-json
 ```
+
+## WSL / Windows Permission Notes
+
+If you copy `data/vox.db` from Windows into WSL, ownership can become `root:root` and writes may fail with:
+
+- `attempt to write a readonly database`
+
+Fix ownership/permissions:
+
+```bash
+sudo chown -R $USER:$USER data
+chmod u+rwx data
+chmod u+rw data/vox.db data/vox.db-wal data/vox.db-shm 2>/dev/null || true
+```
+
+Recommendation:
+
+- Do not run the app with `sudo`.
+- Keep DB files owned by your regular WSL user.
 
 ## License
 

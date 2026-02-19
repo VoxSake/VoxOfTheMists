@@ -12,65 +12,44 @@ const { createWeekWindowService } = require("./server/weekWindowService");
 const { createAnalyticsService } = require("./server/analyticsService");
 const { createAppwriteSyncService } = require("./server/appwriteSyncService");
 const { registerAllRoutes } = require("./server/routes");
+const { buildConfig } = require("./server/config");
+
+const config = buildConfig(process.env);
+const {
+  NODE_ENV,
+  PORT,
+  AUTO_SCRAPE_ENABLED,
+  RETENTION_DAYS,
+  AUTO_VACUUM_ENABLED,
+  VACUUM_MIN_HOURS,
+  PYTHON_CMD,
+  APPWRITE_SYNC_ENABLED,
+  APPWRITE_ENDPOINT,
+  APPWRITE_PROJECT_ID,
+  APPWRITE_API_KEY,
+  APPWRITE_DATABASE_ID,
+  APPWRITE_SNAPSHOTS_COLLECTION_ID,
+  APPWRITE_ENTRIES_COLLECTION_ID,
+  APPWRITE_SYNC_INTERVAL_MINUTES,
+  APPWRITE_SYNC_HOURLY_ALIGNED,
+  APPWRITE_SYNC_TARGET_MINUTE,
+  APPWRITE_SYNC_ENTRY_BATCH_SIZE,
+  APPWRITE_SYNC_STARTUP_MIN_STALE_MINUTES,
+  APPWRITE_BACKFILL_ENABLED,
+  APPWRITE_BACKFILL_TARGET_MINUTE,
+  APPWRITE_FUNCTION_ID,
+  TRUSTED_LOCAL_ORIGINS,
+  WRITE_API_TOKEN,
+  AUTO_SCRAPE_EFFECTIVE,
+  API_CACHE_MAX_ENTRIES,
+} = config;
 
 const HOST = "127.0.0.1";
-const NODE_ENV = process.env.NODE_ENV || "production";
-const PORT = Number(process.env.PORT || 3000);
 const ROOT = __dirname;
 const DIST_DIR = path.join(ROOT, "dist");
 const DB_PATH = path.join(ROOT, "data", "vox.db");
 const IS_PROD = NODE_ENV === "production";
 const HAS_DIST = fs.existsSync(DIST_DIR);
-const AUTO_SCRAPE_ENABLED = process.env.AUTO_SCRAPE !== "0";
-const RETENTION_DAYS = Math.max(0, Number(process.env.RETENTION_DAYS || 0));
-const AUTO_VACUUM_ENABLED = process.env.AUTO_VACUUM !== "0";
-const VACUUM_MIN_HOURS = Math.max(1, Number(process.env.VACUUM_MIN_HOURS || 24));
-const PYTHON_CMD = process.env.PYTHON_CMD || "python";
-const APPWRITE_SYNC_ENABLED = process.env.APPWRITE_SYNC_ENABLED === "1";
-const APPWRITE_ENDPOINT = String(process.env.APPWRITE_ENDPOINT || "").trim().replace(/\/+$/, "");
-const APPWRITE_PROJECT_ID = String(process.env.APPWRITE_PROJECT_ID || "").trim();
-const APPWRITE_API_KEY = String(process.env.APPWRITE_API_KEY || "").trim();
-const APPWRITE_DATABASE_ID = String(process.env.APPWRITE_DATABASE_ID || "").trim();
-const APPWRITE_SNAPSHOTS_COLLECTION_ID = String(process.env.APPWRITE_SNAPSHOTS_COLLECTION_ID || "").trim();
-const APPWRITE_ENTRIES_COLLECTION_ID = String(process.env.APPWRITE_ENTRIES_COLLECTION_ID || "").trim();
-const APPWRITE_SYNC_INTERVAL_MINUTES = Math.max(
-  1,
-  Number(process.env.APPWRITE_SYNC_INTERVAL_MINUTES || 60)
-);
-const APPWRITE_SYNC_HOURLY_ALIGNED = process.env.APPWRITE_SYNC_HOURLY_ALIGNED !== "0";
-const APPWRITE_SYNC_TARGET_MINUTE = Math.max(
-  0,
-  Math.min(59, Number(process.env.APPWRITE_SYNC_TARGET_MINUTE || 12))
-);
-const APPWRITE_SYNC_ENTRY_BATCH_SIZE = Math.max(
-  1,
-  Math.min(50, Number(process.env.APPWRITE_SYNC_ENTRY_BATCH_SIZE || 20))
-);
-const APPWRITE_SYNC_STARTUP_MIN_STALE_MINUTES = Math.max(
-  0,
-  Number(process.env.APPWRITE_SYNC_STARTUP_MIN_STALE_MINUTES || 50)
-);
-const APPWRITE_BACKFILL_ENABLED = process.env.APPWRITE_BACKFILL_ENABLED === "1";
-const APPWRITE_BACKFILL_TARGET_MINUTE = Math.max(
-  0,
-  Math.min(59, Number(process.env.APPWRITE_BACKFILL_TARGET_MINUTE || 30))
-);
-const APPWRITE_FUNCTION_ID = String(process.env.APPWRITE_FUNCTION_ID || "").trim();
-const TRUSTED_LOCAL_ORIGINS = new Set(
-  [
-    `http://127.0.0.1:${PORT}`,
-    `http://localhost:${PORT}`,
-    "http://127.0.0.1:5173",
-    "http://localhost:5173",
-    ...String(process.env.TRUSTED_LOCAL_ORIGINS || "")
-      .split(",")
-      .map((v) => v.trim())
-      .filter(Boolean),
-  ].map((v) => String(v).replace(/\/+$/, ""))
-);
-const WRITE_API_TOKEN = String(process.env.WRITE_API_TOKEN || crypto.randomBytes(32).toString("hex")).trim();
-const AUTO_SCRAPE_EFFECTIVE = AUTO_SCRAPE_ENABLED && !APPWRITE_SYNC_ENABLED;
-const API_CACHE_MAX_ENTRIES = Math.max(100, Number(process.env.API_CACHE_MAX_ENTRIES || 1000));
 const SCRAPE_ARGS = [
   "scraper/scrape_gw2mists.py",
   "--pages",
@@ -1076,6 +1055,12 @@ async function main() {
   await runMaintenance("startup").catch(() => { });
   await fastify.listen({ host: HOST, port: PORT });
   fastify.log.info(`API running on http://${HOST}:${PORT}`);
+  if (!AUTO_SCRAPE_ENABLED && !APPWRITE_SYNC_ENABLED) {
+    fastify.log.warn("[startup] No ingestion mode enabled (AUTO_SCRAPE=0 and APPWRITE_SYNC_ENABLED=0).");
+  }
+  if (AUTO_SCRAPE_ENABLED && APPWRITE_SYNC_ENABLED) {
+    fastify.log.info("[startup] Auto-scrape is configured but disabled because Appwrite sync is enabled.");
+  }
   if (APPWRITE_SYNC_ENABLED) {
     const cfgErr = appwriteSyncService.getConfigError();
     if (cfgErr) {
@@ -1108,6 +1093,9 @@ async function main() {
         appwriteSyncService.scheduleSync();
         appwriteSyncService.scheduleBackfill();
       }
+    }
+    if (APPWRITE_BACKFILL_ENABLED && !APPWRITE_FUNCTION_ID) {
+      fastify.log.warn("[appwrite-sync] Backfill enabled but APPWRITE_FUNCTION_ID is missing.");
     }
   }
   scheduleHourlyScrape();
