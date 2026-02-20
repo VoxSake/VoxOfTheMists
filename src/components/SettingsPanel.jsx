@@ -91,7 +91,7 @@ export function SettingsPanel({
             {webhookTesting ? "Testing..." : "Test Webhook"}
           </button>
           <p className="muted">
-            Share Snapshot always downloads the HTML file. When enabled, it also uploads it to Discord.
+            Share Report always downloads the HTML file. When enabled, it also uploads it to Discord.
           </p>
         </div>
       </aside>

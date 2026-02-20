@@ -629,10 +629,13 @@ export default function App() {
       leaderboardRows: leaderboardSort.sorted,
       moverRows: deltaSort.sorted,
       anomalyRows: anomalySort.sorted,
+      filteredProgressionPayload,
+      filteredComparePayload,
       resetImpactRows: resetImpactSort.sorted,
       consistencyRows: consistencySort.sorted,
       compareSummaries,
       compareProjectionShare,
+      compareWeekEndIso: comparePayload?.weekWindow?.endUtc || null,
     },
   });
 
@@ -720,7 +723,7 @@ export default function App() {
               ))}
             </select>
             <button className="btn ghost" onClick={shareSettings.exportShareSnapshotHtml}>
-              Share Snapshot
+              Share Report
             </button>
             <button className="btn ghost" onClick={() => shareSettings.setSettingsOpen(true)}>
               Settings

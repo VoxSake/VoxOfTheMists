@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { fmtNumber } from "../utils";
 import { useSnapshotStatusPolling } from "./useSnapshotStatusPolling";
+import { useWatchlistAlerts } from "./useWatchlistAlerts";
 
 export function useDashboardData({
   addToast,
@@ -43,8 +44,6 @@ export function useDashboardData({
   const selectedWeekEndRef = useRef(selectedWeekEnd);
   const lastFinishedAtRef = useRef(null);
   const latestSnapshotIdRef = useRef(null);
-  const watchlistAlertSnapshotRef = useRef(null);
-  const watchlistAlertSeenRef = useRef(new Set());
 
   compareAccountsRef.current = effectiveCompareAccounts;
   scopeRef.current = scope;
@@ -309,57 +308,7 @@ export function useDashboardData({
     loadWatchlist().catch(console.error);
   }, [loadWatchlist]);
 
-  useEffect(() => {
-    const rows = Array.isArray(watchlistPayload?.rows) ? watchlistPayload.rows : [];
-    if (!rows.length) return;
-    const snapshotId = String(watchlistPayload?.latest?.snapshotId || "").trim();
-    if (!snapshotId) return;
-
-    if (watchlistAlertSnapshotRef.current !== snapshotId) {
-      watchlistAlertSnapshotRef.current = snapshotId;
-      watchlistAlertSeenRef.current = new Set();
-    }
-
-    const newlyTriggered = rows.filter((row) => Boolean(row?.found) && Boolean(row?.triggered));
-    if (!newlyTriggered.length) return;
-
-    const unseen = [];
-    for (const row of newlyTriggered) {
-      const account = String(row.accountName || row.requestedAccount || "").trim();
-      if (!account) continue;
-      const key = `${snapshotId}|${account.toLowerCase()}`;
-      if (watchlistAlertSeenRef.current.has(key)) continue;
-      watchlistAlertSeenRef.current.add(key);
-      unseen.push(row);
-    }
-    if (!unseen.length) return;
-
-    const maxDetailedToasts = 5;
-    for (const row of unseen.slice(0, maxDetailedToasts)) {
-      const account = String(row.accountName || row.requestedAccount || "Unknown");
-      const weeklyGain = Math.max(0, Number(row.weeklyGain || 0));
-      const rankChange = Number.isFinite(Number(row.rankChange)) ? Number(row.rankChange) : 0;
-      const detail =
-        rankChange > 0
-          ? `${account}: +${fmtNumber(weeklyGain)} weekly, +${fmtNumber(rankChange)} rank`
-          : `${account}: +${fmtNumber(weeklyGain)} weekly`;
-      addToast({
-        title: "Watchlist Alert",
-        description: detail,
-        variant: "success",
-        duration: 0,
-      });
-    }
-    const remaining = unseen.length - maxDetailedToasts;
-    if (remaining > 0) {
-      addToast({
-        title: "Watchlist Alert",
-        description: `${fmtNumber(remaining)} more account(s) triggered in this snapshot.`,
-        variant: "default",
-        duration: 0,
-      });
-    }
-  }, [watchlistPayload, addToast]);
+  useWatchlistAlerts({ watchlistPayload, addToast });
 
   useEffect(() => {
     loadHealth().catch(console.error);

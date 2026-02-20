@@ -1,34 +1,11 @@
-function esc(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function section(title, body) {
-  return `<section class="card"><h2>${esc(title)}</h2>${body}</section>`;
-}
-
-function list(items) {
-  if (!items?.length) return `<p class="muted">No data.</p>`;
-  return `<ul>${items.map((item) => `<li>${item}</li>`).join("")}</ul>`;
-}
-
-function table(headers, rows, tableId) {
-  if (!rows?.length) return `<p class="muted">No rows.</p>`;
-  const head = headers.map((h) => `<th>${esc(h)}</th>`).join("");
-  const body = rows
-    .map((row) => `<tr>${row.map((cell) => `<td>${esc(cell)}</td>`).join("")}</tr>`)
-    .join("");
-  return `<div class="table-wrap" data-paginated="1" data-table-id="${esc(tableId)}"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
-}
+import { buildBarChartSvg, buildLineChartSvg } from "./shareReport/charts";
+import { esc, list, section, statCards, table } from "./shareReport/primitives";
+import { reportCss } from "./shareReport/styles";
 
 export function buildSnapshotHtml(snapshot) {
   const generatedAt = esc(snapshot.generatedAt || "-");
   const timezone = esc(snapshot.timeZone || "UTC");
-  const title = `Vox of the Mists - Snapshot - ${generatedAt}`;
+  const title = snapshot.title || `Vox of the Mists - Report - ${generatedAt}`;
 
   const overview = section(
     "Overview",
@@ -41,7 +18,34 @@ export function buildSnapshotHtml(snapshot) {
       `<strong>Storage:</strong> ${esc(snapshot.overview.storage)}`,
       `<strong>Week reset:</strong> ${esc(snapshot.overview.weekReset)}`,
       `<strong>Velocity:</strong> ${esc(snapshot.overview.velocity)}`,
+    ]),
+    "Operational snapshot for current filters and timezone."
+  );
+
+  const kpis = section(
+    "Highlights",
+    statCards([
+      { label: "Snapshots", value: String(snapshot.overview.storage || "-").split("|")[0]?.trim() || "-" },
+      { label: "Latest Snapshot", value: String(snapshot.overview.latestSnapshot || "-").split("|")[0]?.trim() || "-" },
+      { label: "Ingestion", value: snapshot.overview.ingestionStatus || "-" },
+      { label: "Top Projection", value: snapshot.compareProjectionLeader || "-" },
     ])
+  );
+
+  const charts = section(
+    "Charts",
+    `<div class="chart-grid">
+      ${buildLineChartSvg(snapshot?.charts?.progressionWeekly?.series || [], {
+        title: snapshot?.charts?.progressionWeekly?.title || "Top Progression",
+      })}
+      ${buildLineChartSvg(snapshot?.charts?.compareWeekly?.series || [], {
+        title: snapshot?.charts?.compareWeekly?.title || "Compare Accounts",
+      })}
+      ${buildBarChartSvg(snapshot?.charts?.moversWeeklyDelta?.rows || [], {
+        title: snapshot?.charts?.moversWeeklyDelta?.title || "Top Movers",
+      })}
+    </div>`,
+    "Dashed segments in Compare Accounts indicate projected kills to week end."
   );
 
   let tableSeq = 0;
@@ -67,10 +71,10 @@ export function buildSnapshotHtml(snapshot) {
         r.accountName,
         r.weeklyKillsDelta,
         r.totalKillsDelta,
-      ])
-      ,
+      ]),
       nextTableId("movers")
-    )
+    ),
+    "Computed from the latest snapshot versus the immediately previous snapshot."
   );
 
   const anomalies = section(
@@ -109,48 +113,8 @@ export function buildSnapshotHtml(snapshot) {
         r.stddevDelta,
         r.activeIntervals,
         r.totalGain,
-      ])
-      ,
-      nextTableId("consistency")
-    )
-  );
-
-  const compareSummaries = section(
-    "Compare Activity Summary",
-    table(
-      [
-        "Account",
-        "Dominant Segment",
-        "Confidence",
-        "Total Hours",
-        "Avg Kills/h",
-        "Weekly Gain",
-        "Projected +",
-        "Projected At Reset",
-        "Hours/Day",
-        "Night",
-        "Morning",
-        "Afternoon",
-        "Primetime",
-        "Evening",
-      ],
-      (snapshot.compareSummaries || []).map((s) => [
-        s.account,
-        s.dominant,
-        `${s.confidence}%`,
-        s.totalHours ?? 0,
-        s.avgKillsPerHour ?? "-",
-        s.weeklyKillsGain ?? "-",
-        s.projectedWeeklyGain ?? "-",
-        s.projectedWeeklyAtReset ?? "-",
-        `Fri ${s.hoursByDay?.Friday ?? 0}h | Sat ${s.hoursByDay?.Saturday ?? 0}h | Sun ${s.hoursByDay?.Sunday ?? 0}h | Mon ${s.hoursByDay?.Monday ?? 0}h | Tue ${s.hoursByDay?.Tuesday ?? 0}h | Wed ${s.hoursByDay?.Wednesday ?? 0}h | Thu ${s.hoursByDay?.Thursday ?? 0}h`,
-        s.deltas.Night,
-        s.deltas.Morning,
-        s.deltas.Afternoon,
-        s.deltas.Primetime,
-        s.deltas.Evening,
       ]),
-      nextTableId("compare-summary")
+      nextTableId("consistency")
     )
   );
 
@@ -170,44 +134,63 @@ export function buildSnapshotHtml(snapshot) {
       )
   );
 
+  const compareSummaries = section(
+    "Compare Activity Summary",
+    table(
+      [
+        "Account",
+        "Dominant Segment",
+        "Confidence",
+        "Total Hours",
+        "Avg Kills/h",
+        "Weekly Gain",
+        "Projected +",
+        "Projected At Reset",
+        "Hours/Day",
+      ],
+      (snapshot.compareSummaries || []).map((s) => [
+        s.account,
+        s.dominant,
+        `${s.confidence}%`,
+        s.totalHours ?? 0,
+        s.avgKillsPerHour ?? "-",
+        s.weeklyKillsGain ?? "-",
+        s.projectedWeeklyGain ?? "-",
+        s.projectedWeeklyAtReset ?? "-",
+        `Fri ${s.hoursByDay?.Friday ?? 0}h | Sat ${s.hoursByDay?.Saturday ?? 0}h | Sun ${s.hoursByDay?.Sunday ?? 0}h | Mon ${s.hoursByDay?.Monday ?? 0}h | Tue ${s.hoursByDay?.Tuesday ?? 0}h | Wed ${s.hoursByDay?.Wednesday ?? 0}h | Thu ${s.hoursByDay?.Thursday ?? 0}h`,
+      ]),
+      nextTableId("compare-summary")
+    )
+  );
+
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${esc(title)}</title>
-  <style>
-    :root { color-scheme: dark; }
-    body { font-family: "Segoe UI", Arial, sans-serif; margin: 20px; background: #0f1217; color: #e7edf6; }
-    h1 { margin: 0 0 8px; }
-    h2 { margin: 0 0 10px; font-size: 18px; }
-    p { margin: 6px 0; }
-    ul { margin: 0; padding-left: 20px; }
-    li { margin: 6px 0; }
-    .muted { color: #9eb0c6; }
-    .card { border: 1px solid #2c3746; border-radius: 10px; padding: 14px; margin: 12px 0; background: #161d28; }
-    .table-wrap { overflow: auto; border: 1px solid #273243; border-radius: 8px; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { padding: 8px 10px; border-bottom: 1px solid #273243; text-align: left; white-space: nowrap; }
-    th { background: #1e2735; position: sticky; top: 0; }
-    .meta { margin-bottom: 12px; }
-    .pager { display: flex; align-items: center; gap: 8px; margin: 10px 0 2px; }
-    .pager button { background: #1e2735; color: #e7edf6; border: 1px solid #2c3746; border-radius: 6px; padding: 4px 8px; cursor: pointer; }
-    .pager button:disabled { opacity: .45; cursor: default; }
-  </style>
+  <style>${reportCss}</style>
 </head>
 <body>
-  <h1>Vox of the Mists - Shared Snapshot</h1>
-  <p class="meta muted">Generated at ${generatedAt} (${timezone})</p>
-  <p class="muted">Static export of current dashboard state. Charts are omitted in this HTML report.</p>
-  ${overview}
-  ${leaderboard}
-  ${movers}
-  ${anomalies}
-  ${resetImpact}
-  ${consistency}
-  ${compareProjection}
-  ${compareSummaries}
+  <div class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Shared Report</p>
+        <h1>${esc(snapshot.title || "Vox of the Mists - Shared Report")}</h1>
+      </div>
+      <p class="meta muted">Generated at ${generatedAt} (${timezone})</p>
+    </header>
+    ${kpis}
+    ${overview}
+    ${charts}
+    ${leaderboard}
+    ${movers}
+    ${anomalies}
+    ${resetImpact}
+    ${consistency}
+    ${compareProjection}
+    ${compareSummaries}
+  </div>
   <script>
     (() => {
       const pageSize = 30;

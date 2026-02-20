@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
-import { downloadText, fmtNumber, formatTimestamp } from "../utils";
+import { downloadText, formatTimestamp } from "../utils";
 import { usePersistedState } from "./usePersistedState";
+import { buildShareReportPayload } from "../utils/shareReportPayload";
 
 function parseBooleanTrue(raw) {
   return String(raw) === "1";
@@ -35,111 +36,15 @@ export function useShareSettings({ addToast, timeZone, shareData }) {
   async function exportShareSnapshotHtml() {
     try {
       const generatedAt = formatTimestamp(new Date().toISOString(), timeZone);
-      const snapshot = {
-        generatedAt,
-        timeZone,
-        overview: {
-          latestSnapshot: shareData.latestSnapshot
-            ? `${formatTimestamp(shareData.latestSnapshot.createdAt, timeZone)} | Region: ${shareData.latestSnapshot.region}`
-            : "-",
-          nextSnapshot: formatTimestamp(shareData.nextSnapshotIso, timeZone),
-          ingestionStatus: shareData.ingestionStatus,
-          lastRun: shareData.lastPipelineEventIso ? formatTimestamp(shareData.lastPipelineEventIso, timeZone) : "-",
-          storage: `${fmtNumber(shareData.snapshotCount)} snapshots | ${
-            shareData.healthPayload?.totals?.entries != null ? fmtNumber(shareData.healthPayload.totals.entries) : "-"
-          } entries | avg ${shareData.entriesPerSnapshot != null ? fmtNumber(shareData.entriesPerSnapshot) : "-"} / snapshot`,
-          weekReset: `${shareData.weekReset.countdown} | Ends ${formatTimestamp(shareData.weekReset.endIso, timeZone)}`,
-          velocity: `Total delta ${
-            shareData.velocityTotalWeeklyDelta > 0 ? "+" : ""
-          }${fmtNumber(shareData.velocityTotalWeeklyDelta)} | Avg/hour ${
-            shareData.velocityAvgPerHour != null
-              ? `${shareData.velocityAvgPerHour > 0 ? "+" : ""}${fmtNumber(shareData.velocityAvgPerHour)}`
-              : "-"
-          } | Top mover ${
-            shareData.velocityTopMover
-              ? `${shareData.velocityTopMover.accountName} (+${fmtNumber(shareData.velocityTopMover.weeklyKillsDelta)})`
-              : "-"
-          }`,
-        },
-        leaderboard: shareData.leaderboardRows.map((r) => ({
-          rank: r.rank,
-          accountName: r.accountName,
-          weeklyKills: fmtNumber(r.weeklyKills),
-          totalKills: fmtNumber(r.totalKills),
-        })),
-        movers: shareData.moverRows.map((r) => ({
-          latestRank: r.latestRank,
-          previousRank: r.previousRank,
-          rankChange: r.rankChange == null ? "-" : `${r.rankChange > 0 ? "+" : ""}${r.rankChange}`,
-          accountName: r.accountName,
-          weeklyKillsDelta: `${Number(r.weeklyKillsDelta) > 0 ? "+" : ""}${fmtNumber(r.weeklyKillsDelta)}`,
-          totalKillsDelta: `${Number(r.totalKillsDelta) > 0 ? "+" : ""}${fmtNumber(r.totalKillsDelta)}`,
-        })),
-        anomalies: shareData.anomalyRows.map((r) => ({
-          createdAt: formatTimestamp(r.createdAt, timeZone),
-          accountName: r.accountName,
-          direction: r.direction ? r.direction.charAt(0).toUpperCase() + r.direction.slice(1) : "-",
-          latestDelta: `${Number(r.latestDelta) > 0 ? "+" : ""}${fmtNumber(r.latestDelta)}`,
-          baselineAvg: fmtNumber(r.baselineAvg),
-          deviation: `${Number(r.deviation) > 0 ? "+" : ""}${fmtNumber(r.deviation)}`,
-          deviationPct: `${Number(r.deviationPct) > 0 ? "+" : ""}${r.deviationPct}`,
-        })),
-        resetImpact: shareData.resetImpactRows.map((r) => ({
-          accountName: r.accountName,
-          startRank: r.startRank,
-          endRank: r.endRank,
-          rankGain: `${Number(r.rankGain) > 0 ? "+" : ""}${r.rankGain}`,
-          gain: `${Number(r.gain) > 0 ? "+" : ""}${fmtNumber(r.gain)}`,
-          totalGain: `${Number(r.totalGain) > 0 ? "+" : ""}${fmtNumber(r.totalGain)}`,
-        })),
-        consistency: shareData.consistencyRows.map((r) => ({
-          accountName: r.accountName,
-          consistencyScore: r.consistencyScore,
-          avgDelta: fmtNumber(r.avgDelta),
-          stddevDelta: fmtNumber(r.stddevDelta),
-          activeIntervals: fmtNumber(r.activeIntervals),
-          totalGain: fmtNumber(r.totalGain),
-        })),
-        compareSummaries: shareData.compareSummaries.map((s) => {
-          const projection = (shareData.compareProjectionShare?.rows || []).find((r) => r.account === s.account);
-          const totalHours =
-            Number(s.hoursByDay?.Friday || 0) +
-            Number(s.hoursByDay?.Saturday || 0) +
-            Number(s.hoursByDay?.Sunday || 0) +
-            Number(s.hoursByDay?.Monday || 0) +
-            Number(s.hoursByDay?.Tuesday || 0) +
-            Number(s.hoursByDay?.Wednesday || 0) +
-            Number(s.hoursByDay?.Thursday || 0);
-          return {
-            ...s,
-            totalHours,
-            avgKillsPerHour: projection?.avgPerHour ?? null,
-            weeklyKillsGain: projection?.weeklyGain ?? null,
-            projectedWeeklyGain: projection?.projectedGain ?? null,
-            projectedWeeklyAtReset: projection?.projectedWeekly ?? null,
-          };
-        }),
-        compareProjection: (shareData.compareProjectionShare?.rows || []).map((r) => ({
-          account: r.account,
-          avgKillsPerHour: fmtNumber(r.avgPerHour),
-          weeklyKillsGain: fmtNumber(r.weeklyGain),
-          projectedGain: fmtNumber(r.projectedGain),
-          projectedWeeklyAtReset: fmtNumber(r.projectedWeekly),
-        })),
-        compareProjectionLeader: shareData.compareProjectionShare?.leader
-          ? `${shareData.compareProjectionShare.leader.account} (${fmtNumber(
-            shareData.compareProjectionShare.leader.projectedWeekly
-          )})`
-          : "-",
-      };
+      const snapshot = buildShareReportPayload({ shareData, timeZone, generatedAt });
       const { buildSnapshotHtml } = await import("../utils/snapshotExport");
       const html = buildSnapshotHtml(snapshot);
-      const filename = `vox-share-snapshot-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.html`;
+      const filename = `vox-share-report-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.html`;
       downloadText(filename, html, "text/html;charset=utf-8;");
       if (discordWebhookEnabled) {
         if (!isValidDiscordWebhookUrl(discordWebhookUrl)) {
           addToast({
-            title: "Share Snapshot",
+            title: "Share Report",
             description: "HTML downloaded. Discord webhook URL is invalid.",
             variant: "error",
             duration: 4000,
@@ -150,24 +55,24 @@ export function useShareSettings({ addToast, timeZone, shareData }) {
           webhookUrl: discordWebhookUrl.trim(),
           filename,
           html,
-          content: `Vox of the Mists - Snapshot - ${generatedAt}`,
+          content: `Vox of the Mists - Report - ${generatedAt}`,
         });
         addToast({
-          title: "Share Snapshot",
-          description: "HTML downloaded and sent to Discord webhook.",
+          title: "Share Report",
+          description: "HTML report downloaded and sent to Discord webhook.",
           variant: "success",
           duration: 3500,
         });
         return;
       }
       addToast({
-        title: "Share Snapshot",
-        description: "Single-file HTML exported.",
+        title: "Share Report",
+        description: "Single-file HTML report exported.",
         variant: "success",
         duration: 3000,
       });
     } catch (error) {
-      addToast({ title: "Share Snapshot Failed", description: error.message, variant: "error" });
+      addToast({ title: "Share Report Failed", description: error.message, variant: "error" });
     }
   }
 
