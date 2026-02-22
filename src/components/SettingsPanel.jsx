@@ -14,8 +14,11 @@ export function SettingsPanel({
   setDiscordWebhookEnabled,
   discordWebhookUrl,
   setDiscordWebhookUrl,
+  sharePreset,
+  setSharePreset,
   onTestDiscordWebhook,
   webhookTesting,
+  dataQualityChecks,
 }) {
   if (!isOpen) return null;
 
@@ -59,8 +62,24 @@ export function SettingsPanel({
               checked={plainMode}
               onChange={(e) => setPlainMode(e.target.checked)}
             />
-            Reduced effects
+            Reduce visual effects
           </label>
+        </div>
+
+        <div className="settings-group">
+          <p className="settings-label">Data Quality</p>
+          <div className="quality-compact-list">
+            {(dataQualityChecks || []).map((check) => {
+              return (
+                <div key={check.id} className={`quality-compact-item quality-${check.status || "alert"}`}>
+                  <div>
+                    <p className="quality-compact-title">{check.title}</p>
+                    <p className="quality-compact-detail">{check.detail}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         <div className="settings-group">
@@ -71,7 +90,14 @@ export function SettingsPanel({
               checked={discordWebhookEnabled}
               onChange={(e) => setDiscordWebhookEnabled(e.target.checked)}
             />
-            Send to Discord webhook
+            Send report to Discord webhook
+          </label>
+          <label className="settings-row">
+            <span>Report Preset</span>
+            <select value={sharePreset} onChange={(e) => setSharePreset(e.target.value)}>
+              <option value="full">Full detail</option>
+              <option value="public-safe">Public-safe (masked)</option>
+            </select>
           </label>
           <label className="settings-row">
             <span>Webhook URL</span>

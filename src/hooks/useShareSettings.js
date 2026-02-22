@@ -22,6 +22,10 @@ export function useShareSettings({ addToast, timeZone, shareData }) {
     parse: (raw) => String(raw || "").trim(),
     serialize: (v) => String(v || "").trim(),
   });
+  const [sharePreset, setSharePreset] = usePersistedState("vox-share-preset", "full", {
+    parse: (raw) => (String(raw || "").trim() === "public-safe" ? "public-safe" : "full"),
+    serialize: (v) => (String(v || "").trim() === "public-safe" ? "public-safe" : "full"),
+  });
   const [webhookTesting, setWebhookTesting] = useState(false);
 
   useEffect(() => {
@@ -36,10 +40,10 @@ export function useShareSettings({ addToast, timeZone, shareData }) {
   async function exportShareSnapshotHtml() {
     try {
       const generatedAt = formatTimestamp(new Date().toISOString(), timeZone);
-      const snapshot = buildShareReportPayload({ shareData, timeZone, generatedAt });
+      const snapshot = buildShareReportPayload({ shareData, timeZone, generatedAt, preset: sharePreset });
       const { buildSnapshotHtml } = await import("../utils/snapshotExport");
       const html = buildSnapshotHtml(snapshot);
-      const filename = `vox-share-report-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.html`;
+      const filename = `vox-share-report-${sharePreset}-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.html`;
       downloadText(filename, html, "text/html;charset=utf-8;");
       if (discordWebhookEnabled) {
         if (!isValidDiscordWebhookUrl(discordWebhookUrl)) {
@@ -101,6 +105,8 @@ export function useShareSettings({ addToast, timeZone, shareData }) {
     setDiscordWebhookEnabled,
     discordWebhookUrl,
     setDiscordWebhookUrl,
+    sharePreset,
+    setSharePreset,
     webhookTesting,
     exportShareSnapshotHtml,
     testDiscordWebhook,

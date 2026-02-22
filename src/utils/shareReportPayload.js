@@ -1,5 +1,17 @@
 import { fmtNumber, formatTimestamp } from "../utils";
 
+function maskAccountName(account) {
+  const raw = String(account || "").trim();
+  if (!raw) return raw;
+  if (raw.toLowerCase().includes("anon")) return raw;
+  if (raw.length <= 3) return `${raw}***`;
+  return `${raw.slice(0, 3)}***`;
+}
+
+function accountForPreset(account, preset) {
+  return preset === "public-safe" ? maskAccountName(account) : String(account || "");
+}
+
 function toOrderedNumericSeries(points = [], valueKey = "weeklyKills") {
   return [...(points || [])]
     .sort((a, b) => String(a?.createdAt || "").localeCompare(String(b?.createdAt || "")))
@@ -59,7 +71,11 @@ function buildCompareSeriesWithProjection({ seriesMap = {}, projectionRows = [],
   });
 }
 
-export function buildShareReportPayload({ shareData, timeZone, generatedAt }) {
+export function buildShareReportPayload({ shareData, timeZone, generatedAt, preset = "full" }) {
+  const maxLeaderboardRows = preset === "public-safe" ? 80 : 300;
+  const maxMoverRows = preset === "public-safe" ? 60 : 200;
+  const maxAnomalyRows = preset === "public-safe" ? 40 : 100;
+
   return {
     generatedAt,
     timeZone,
@@ -83,27 +99,30 @@ export function buildShareReportPayload({ shareData, timeZone, generatedAt }) {
           : "-"
       } | Top mover ${
         shareData.velocityTopMover
-          ? `${shareData.velocityTopMover.accountName} (+${fmtNumber(shareData.velocityTopMover.weeklyKillsDelta)})`
+          ? `${accountForPreset(shareData.velocityTopMover.accountName, preset)} (+${fmtNumber(
+            shareData.velocityTopMover.weeklyKillsDelta
+          )})`
           : "-"
       }`,
+      sharePreset: preset === "public-safe" ? "Public-safe (masked accounts, reduced detail)" : "Full detail",
     },
-    leaderboard: shareData.leaderboardRows.map((r) => ({
+    leaderboard: shareData.leaderboardRows.slice(0, maxLeaderboardRows).map((r) => ({
       rank: r.rank,
-      accountName: r.accountName,
+      accountName: accountForPreset(r.accountName, preset),
       weeklyKills: fmtNumber(r.weeklyKills),
       totalKills: fmtNumber(r.totalKills),
     })),
-    movers: shareData.moverRows.map((r) => ({
+    movers: shareData.moverRows.slice(0, maxMoverRows).map((r) => ({
       latestRank: r.latestRank,
       previousRank: r.previousRank,
       rankChange: r.rankChange == null ? "-" : `${r.rankChange > 0 ? "+" : ""}${r.rankChange}`,
-      accountName: r.accountName,
+      accountName: accountForPreset(r.accountName, preset),
       weeklyKillsDelta: `${Number(r.weeklyKillsDelta) > 0 ? "+" : ""}${fmtNumber(r.weeklyKillsDelta)}`,
       totalKillsDelta: `${Number(r.totalKillsDelta) > 0 ? "+" : ""}${fmtNumber(r.totalKillsDelta)}`,
     })),
-    anomalies: shareData.anomalyRows.map((r) => ({
+    anomalies: shareData.anomalyRows.slice(0, maxAnomalyRows).map((r) => ({
       createdAt: formatTimestamp(r.createdAt, timeZone),
-      accountName: r.accountName,
+      accountName: accountForPreset(r.accountName, preset),
       direction: r.direction ? r.direction.charAt(0).toUpperCase() + r.direction.slice(1) : "-",
       latestDelta: `${Number(r.latestDelta) > 0 ? "+" : ""}${fmtNumber(r.latestDelta)}`,
       baselineAvg: fmtNumber(r.baselineAvg),
@@ -111,7 +130,7 @@ export function buildShareReportPayload({ shareData, timeZone, generatedAt }) {
       deviationPct: `${Number(r.deviationPct) > 0 ? "+" : ""}${r.deviationPct}`,
     })),
     resetImpact: shareData.resetImpactRows.map((r) => ({
-      accountName: r.accountName,
+      accountName: accountForPreset(r.accountName, preset),
       startRank: r.startRank,
       endRank: r.endRank,
       rankGain: `${Number(r.rankGain) > 0 ? "+" : ""}${r.rankGain}`,
@@ -119,7 +138,7 @@ export function buildShareReportPayload({ shareData, timeZone, generatedAt }) {
       totalGain: `${Number(r.totalGain) > 0 ? "+" : ""}${fmtNumber(r.totalGain)}`,
     })),
     consistency: shareData.consistencyRows.map((r) => ({
-      accountName: r.accountName,
+      accountName: accountForPreset(r.accountName, preset),
       consistencyScore: r.consistencyScore,
       avgDelta: fmtNumber(r.avgDelta),
       stddevDelta: fmtNumber(r.stddevDelta),
@@ -138,6 +157,7 @@ export function buildShareReportPayload({ shareData, timeZone, generatedAt }) {
         Number(s.hoursByDay?.Thursday || 0);
       return {
         ...s,
+        account: accountForPreset(s.account, preset),
         totalHours,
         avgKillsPerHour: projection?.avgPerHour ?? null,
         weeklyKillsGain: projection?.weeklyGain ?? null,
@@ -146,19 +166,24 @@ export function buildShareReportPayload({ shareData, timeZone, generatedAt }) {
       };
     }),
     compareProjection: (shareData.compareProjectionShare?.rows || []).map((r) => ({
-      account: r.account,
+      account: accountForPreset(r.account, preset),
       avgKillsPerHour: fmtNumber(r.avgPerHour),
       weeklyKillsGain: fmtNumber(r.weeklyGain),
       projectedGain: fmtNumber(r.projectedGain),
       projectedWeeklyAtReset: fmtNumber(r.projectedWeekly),
     })),
     compareProjectionLeader: shareData.compareProjectionShare?.leader
-      ? `${shareData.compareProjectionShare.leader.account} (${fmtNumber(shareData.compareProjectionShare.leader.projectedWeekly)})`
+      ? `${accountForPreset(shareData.compareProjectionShare.leader.account, preset)} (${fmtNumber(
+        shareData.compareProjectionShare.leader.projectedWeekly
+      )})`
       : "-",
     charts: {
       progressionWeekly: {
         title: "Top Progression (Weekly Kills)",
-        series: buildTopSeriesMap(shareData.filteredProgressionPayload?.series || {}, "weeklyKills", 8),
+        series: buildTopSeriesMap(shareData.filteredProgressionPayload?.series || {}, "weeklyKills", 8).map((row) => ({
+          ...row,
+          account: accountForPreset(row.account, preset),
+        })),
       },
       compareWeekly: {
         title: "Compare Accounts (Weekly Kills + Projection)",
@@ -167,7 +192,10 @@ export function buildShareReportPayload({ shareData, timeZone, generatedAt }) {
           projectionRows: shareData.compareProjectionShare?.rows || [],
           weekEndIso: shareData.compareWeekEndIso || null,
           maxSeries: 8,
-        }),
+        }).map((row) => ({
+          ...row,
+          account: accountForPreset(row.account, preset),
+        })),
       },
       moversWeeklyDelta: {
         title: "Top Movers (Weekly Delta)",
@@ -176,7 +204,7 @@ export function buildShareReportPayload({ shareData, timeZone, generatedAt }) {
           .sort((a, b) => Number(b.weeklyKillsDelta || 0) - Number(a.weeklyKillsDelta || 0))
           .slice(0, 10)
           .map((r) => ({
-            accountName: String(r.accountName || ""),
+            accountName: accountForPreset(r.accountName, preset),
             value: Number(r.weeklyKillsDelta || 0),
           })),
       },

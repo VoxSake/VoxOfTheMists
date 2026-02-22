@@ -1,5 +1,9 @@
 let writeAuthToken = null;
 
+function buildWeekEndQuery(weekEnd) {
+  return weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
+}
+
 async function requestJson(url, init = {}) {
   const res = await fetch(url, init);
   const payload = await res.json().catch(() => ({}));
@@ -39,47 +43,51 @@ async function postWithWriteAuth(url, body = {}) {
 }
 
 export const api = {
-  getLatest(top) {
-    return requestJson(`/api/latest?top=${top}`);
+  getLatest({ top, weekEnd = null }) {
+    const weekEndQuery = weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
+    return requestJson(`/api/latest?top=${top}${weekEndQuery}`);
   },
   getSnapshots() {
     return requestJson("/api/snapshots");
   },
   getProgressionTop({ top, scope, days = null, weekEnd = null }) {
     const daysQuery = days ? `&days=${days}` : "";
-    const weekEndQuery = weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
+    const weekEndQuery = buildWeekEndQuery(weekEnd);
     return requestJson(`/api/progression/top?top=${top}&scope=${encodeURIComponent(scope)}${daysQuery}${weekEndQuery}`);
   },
   getCompare({ accounts, scope, days = null, weekEnd = null }) {
     const daysQuery = days ? `&days=${days}` : "";
-    const weekEndQuery = weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
+    const weekEndQuery = buildWeekEndQuery(weekEnd);
     return requestJson(
       `/api/compare?accounts=${encodeURIComponent(accounts.join(","))}&scope=${encodeURIComponent(scope)}${daysQuery}${weekEndQuery}`
     );
   },
+  getPlayerHistory(account) {
+    return requestJson(`/api/player/${encodeURIComponent(account)}/history`);
+  },
   getLeaderboardDelta({ top, metric, scope, weekEnd = null }) {
-    const weekEndQuery = weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
+    const weekEndQuery = buildWeekEndQuery(weekEnd);
     return requestJson(
       `/api/leaderboard/delta?top=${top}&metric=${encodeURIComponent(metric)}&scope=${encodeURIComponent(scope)}${weekEndQuery}`
     );
   },
   getAnomalies({ top, minDeltaAbs, lookbackHours, scope, weekEnd = null }) {
-    const weekEndQuery = weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
+    const weekEndQuery = buildWeekEndQuery(weekEnd);
     return requestJson(
       `/api/anomalies?top=${top}&minDeltaAbs=${minDeltaAbs}&lookbackHours=${lookbackHours}&scope=${encodeURIComponent(scope)}${weekEndQuery}`
     );
   },
   getResetImpact({ top, windowHours, weekEnd = null }) {
-    const weekEndQuery = weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
+    const weekEndQuery = buildWeekEndQuery(weekEnd);
     return requestJson(`/api/reset-impact?top=${top}&windowHours=${windowHours}${weekEndQuery}`);
   },
   getConsistency({ top, scope, days = null, weekEnd = null }) {
     const daysQuery = days ? `&days=${days}` : "";
-    const weekEndQuery = weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
+    const weekEndQuery = buildWeekEndQuery(weekEnd);
     return requestJson(`/api/consistency?top=${top}&scope=${encodeURIComponent(scope)}${daysQuery}${weekEndQuery}`);
   },
   getWatchlist({ accounts, minGain, minRankUp, scope, weekEnd = null }) {
-    const weekEndQuery = weekEnd ? `&weekEnd=${encodeURIComponent(weekEnd)}` : "";
+    const weekEndQuery = buildWeekEndQuery(weekEnd);
     return requestJson(
       `/api/watchlist?accounts=${encodeURIComponent(accounts.join(","))}&minGain=${minGain}&minRankUp=${minRankUp}&scope=${encodeURIComponent(scope)}${weekEndQuery}`
     );

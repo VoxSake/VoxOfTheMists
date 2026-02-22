@@ -51,12 +51,19 @@ export function useDashboardData({
   selectedWeekEndRef.current = selectedWeekEnd;
   latestSnapshotIdRef.current = latestSnapshot?.snapshotId || null;
 
+  const reportBackgroundError = useCallback((source, error) => {
+    console.error(`[useDashboardData] ${source} failed`, error);
+  }, []);
+
   const loadOverview = useCallback(async () => {
-    const [latest, snapshots] = await Promise.all([api.getLatest(topLeaderboard), api.getSnapshots()]);
+    const [latest, snapshots] = await Promise.all([
+      api.getLatest({ top: topLeaderboard, weekEnd: scope === "week" ? selectedWeekEnd : null }),
+      api.getSnapshots(),
+    ]);
     setLatestSnapshot(latest.snapshot);
     setEntries(latest.entries || []);
     setSnapshotCount((snapshots.snapshots || []).length);
-  }, [topLeaderboard]);
+  }, [topLeaderboard, scope, selectedWeekEnd]);
 
   const loadProgression = useCallback(async () => {
     const payload = await api.getProgressionTop({
@@ -104,7 +111,7 @@ export function useDashboardData({
   }, [anomalyMinDelta, scope, selectedWeekEnd]);
 
   const loadResetImpact = useCallback(async () => {
-    const windowHours = Math.max(1, Math.min(24, Number(resetImpactWindow || 3)));
+    const windowHours = Math.max(1, Math.min(24, Number(resetImpactWindow || 5)));
     const payload = await api.getResetImpact({ top: 20, windowHours, weekEnd: selectedWeekEnd });
     setResetImpactPayload(payload);
   }, [resetImpactWindow, selectedWeekEnd]);
@@ -276,45 +283,45 @@ export function useDashboardData({
       .then(() => setInitialLoading(false))
       .catch((err) => {
         setInitialLoading(false);
-        console.error(err);
+        reportBackgroundError("loadOverview", err);
       });
-  }, [loadOverview]);
+  }, [loadOverview, reportBackgroundError]);
 
   useEffect(() => {
-    loadProgression().catch(console.error);
-  }, [loadProgression]);
+    loadProgression().catch((err) => reportBackgroundError("loadProgression", err));
+  }, [loadProgression, reportBackgroundError]);
 
   useEffect(() => {
-    loadCompare().catch(console.error);
-  }, [loadCompare, effectiveCompareAccounts, scope, allTimeDaysParam, selectedWeekEnd]);
+    loadCompare().catch((err) => reportBackgroundError("loadCompare", err));
+  }, [loadCompare, effectiveCompareAccounts, scope, allTimeDaysParam, selectedWeekEnd, reportBackgroundError]);
 
   useEffect(() => {
-    loadDelta().catch(console.error);
-  }, [loadDelta]);
+    loadDelta().catch((err) => reportBackgroundError("loadDelta", err));
+  }, [loadDelta, reportBackgroundError]);
 
   useEffect(() => {
-    loadAnomalies().catch(console.error);
-  }, [loadAnomalies]);
+    loadAnomalies().catch((err) => reportBackgroundError("loadAnomalies", err));
+  }, [loadAnomalies, reportBackgroundError]);
 
   useEffect(() => {
-    loadResetImpact().catch(console.error);
-  }, [loadResetImpact]);
+    loadResetImpact().catch((err) => reportBackgroundError("loadResetImpact", err));
+  }, [loadResetImpact, reportBackgroundError]);
 
   useEffect(() => {
-    loadConsistency().catch(console.error);
-  }, [loadConsistency]);
+    loadConsistency().catch((err) => reportBackgroundError("loadConsistency", err));
+  }, [loadConsistency, reportBackgroundError]);
 
   useEffect(() => {
-    loadWatchlist().catch(console.error);
-  }, [loadWatchlist]);
+    loadWatchlist().catch((err) => reportBackgroundError("loadWatchlist", err));
+  }, [loadWatchlist, reportBackgroundError]);
 
   useWatchlistAlerts({ watchlistPayload, addToast });
 
   useEffect(() => {
-    loadHealth().catch(console.error);
-    loadWeeklyReport().catch(console.error);
-    loadWeeks().catch(console.error);
-  }, [loadHealth, loadWeeklyReport, loadWeeks]);
+    loadHealth().catch((err) => reportBackgroundError("loadHealth", err));
+    loadWeeklyReport().catch((err) => reportBackgroundError("loadWeeklyReport", err));
+    loadWeeks().catch((err) => reportBackgroundError("loadWeeks", err));
+  }, [loadHealth, loadWeeklyReport, loadWeeks, reportBackgroundError]);
 
   useSnapshotStatusPolling(fetchSnapshotStatus);
 

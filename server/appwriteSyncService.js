@@ -38,6 +38,8 @@ function createAppwriteSyncService({
   let appwriteBackfillTimer = null;
   let nextAppwriteSyncAtIso = null;
   const appwriteBase = endpoint.endsWith("/v1") ? endpoint : `${endpoint}/v1`;
+  const syncFailureBackoffBaseMs = 60 * 1000;
+  const syncFailureBackoffMaxMs = 15 * 60 * 1000;
 
   const status = {
     enabled,
@@ -49,7 +51,15 @@ function createAppwriteSyncService({
     lastFetchedSnapshots: 0,
     lastImportedSnapshots: 0,
     lastImportedEntries: 0,
+    consecutiveFailures: 0,
+    lastSuccessfulAt: null,
   };
+
+  function getSyncFailureBackoffMs() {
+    const failures = Math.max(1, Number(status.consecutiveFailures || 1));
+    const multiplier = 2 ** Math.max(0, failures - 1);
+    return Math.min(syncFailureBackoffMaxMs, syncFailureBackoffBaseMs * multiplier);
+  }
 
   function getConfigError() {
     if (!enabled) return null;
@@ -224,12 +234,16 @@ function createAppwriteSyncService({
       status.lastImportedSnapshots = importedSnapshots;
       status.lastImportedEntries = importedEntries;
       status.lastFinishedAt = new Date().toISOString();
+      status.lastSuccessfulAt = status.lastFinishedAt;
+      status.consecutiveFailures = 0;
+      status.lastError = null;
 
       if (importedSnapshots > 0 && typeof onImported === "function") {
         onImported();
       }
       return { ok: true, fetched: snapshotDocs.length, importedSnapshots, importedEntries };
     } catch (err) {
+      status.consecutiveFailures = Number(status.consecutiveFailures || 0) + 1;
       status.lastError = err.message;
       status.lastFinishedAt = new Date().toISOString();
       throw err;
@@ -328,12 +342,16 @@ function createAppwriteSyncService({
     nextAppwriteSyncAtIso = new Date(Date.now() + delay).toISOString();
     clearTimeout(appwriteSyncTimer);
     appwriteSyncTimer = setTimeout(async () => {
+      let nextDelayOverrideMs = null;
       try {
         await runSyncAsync("timer");
       } catch (err) {
-        log.error(`[appwrite-sync] Failed: ${err.message}`);
+        nextDelayOverrideMs = getSyncFailureBackoffMs();
+        log.error(
+          `[appwrite-sync] Failed: ${err.message} (consecutiveFailures=${status.consecutiveFailures}, retryInMs=${nextDelayOverrideMs})`
+        );
       } finally {
-        scheduleSync();
+        scheduleSync(nextDelayOverrideMs);
       }
     }, delay);
   }

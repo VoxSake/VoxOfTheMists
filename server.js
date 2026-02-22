@@ -753,15 +753,30 @@ function originFromHeader(value) {
   }
 }
 
+function isBrowserFetch(request) {
+  const site = String(request?.headers?.["sec-fetch-site"] || "").trim().toLowerCase();
+  return site === "same-origin" || site === "same-site" || site === "cross-site" || site === "none";
+}
+
+function hasTrustedBrowserOrigin(request) {
+  const fetchSite = String(request?.headers?.["sec-fetch-site"] || "").trim().toLowerCase();
+  const origin = originFromHeader(request.headers.origin);
+  const refererOrigin = originFromHeader(request.headers.referer);
+  const browserOrigin = origin || refererOrigin;
+  if (isBrowserFetch(request) && !browserOrigin) {
+    // We send Referrer-Policy: no-referrer, so same-origin browser fetches may omit both headers.
+    return fetchSite === "same-origin";
+  }
+  if (browserOrigin && !TRUSTED_LOCAL_ORIGINS.has(browserOrigin)) return false;
+  return true;
+}
+
 function requireTrustedLocalWrite(request, reply, done) {
   if (!isLoopbackIp(request.ip)) {
     reply.code(403).send({ error: "Forbidden" });
     return;
   }
-  const origin = originFromHeader(request.headers.origin);
-  const refererOrigin = originFromHeader(request.headers.referer);
-  const browserOrigin = origin || refererOrigin;
-  if (browserOrigin && !TRUSTED_LOCAL_ORIGINS.has(browserOrigin)) {
+  if (!hasTrustedBrowserOrigin(request)) {
     reply.code(403).send({ error: "Forbidden" });
     return;
   }
@@ -784,10 +799,7 @@ function requireTrustedLocalRead(request, reply, done) {
     reply.code(403).send({ error: "Forbidden" });
     return;
   }
-  const origin = originFromHeader(request.headers.origin);
-  const refererOrigin = originFromHeader(request.headers.referer);
-  const browserOrigin = origin || refererOrigin;
-  if (browserOrigin && !TRUSTED_LOCAL_ORIGINS.has(browserOrigin)) {
+  if (!hasTrustedBrowserOrigin(request)) {
     reply.code(403).send({ error: "Forbidden" });
     return;
   }
@@ -1021,6 +1033,7 @@ async function buildServer() {
       getTopProgression,
       qLatestSnapshot,
       qLatestEntries,
+      getLatestSnapshotMetaInWindow,
       serializeEntryRow,
       sanitizeAccountName,
       qHistory,

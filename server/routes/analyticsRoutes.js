@@ -11,6 +11,7 @@ function registerAnalyticsRoutes(fastify, deps) {
     getTopProgression,
     qLatestSnapshot,
     qLatestEntries,
+    getLatestSnapshotMetaInWindow,
     serializeEntryRow,
     sanitizeAccountName,
     qHistory,
@@ -259,23 +260,46 @@ function registerAnalyticsRoutes(fastify, deps) {
           additionalProperties: false,
           properties: {
             top: { type: "integer", minimum: 1, maximum: 300, default: 100 },
+            weekEnd: { type: "string", maxLength: 40 },
           },
         },
       },
     },
-    async (request) => {
+    async (request, reply) => {
       const top = request.query.top || 100;
-      return withApiCache("latest", { top }, 45_000, async () => {
-        const snap = qLatestSnapshot.get();
-        if (!snap || !snap.snapshot_id) return { snapshot: null, entries: [] };
+      let resolvedWeek = null;
+      if (request.query.weekEnd) {
+        resolvedWeek = resolveWeekSelectionOrReply({
+          reply,
+          weekEndRaw: request.query.weekEnd,
+          requireWeekWindow: true,
+        });
+        if (!resolvedWeek) return;
+      }
+
+      return withApiCache("latest", { top, weekEnd: resolvedWeek?.selectedWeekEndUtc || null }, 45_000, async () => {
+        const snap = resolvedWeek?.weekWindow
+          ? getLatestSnapshotMetaInWindow(resolvedWeek.weekWindow.startUtc, resolvedWeek.weekWindow.endUtc)
+          : (() => {
+              const raw = qLatestSnapshot.get();
+              if (!raw || !raw.snapshot_id) return null;
+              return {
+                snapshotId: raw.snapshot_id,
+                createdAt: raw.created_at,
+                region: raw.region,
+                count: raw.count,
+              };
+            })();
+
+        if (!snap?.snapshotId) return { snapshot: null, entries: [] };
         return {
           snapshot: {
-            snapshotId: snap.snapshot_id,
-            createdAt: snap.created_at,
+            snapshotId: snap.snapshotId,
+            createdAt: snap.createdAt,
             region: snap.region,
             count: snap.count,
           },
-          entries: qLatestEntries.all(snap.snapshot_id, top).map((row) => serializeEntryRow(row)),
+          entries: qLatestEntries.all(snap.snapshotId, top).map((row) => serializeEntryRow(row)),
         };
       });
     }

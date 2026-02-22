@@ -41,6 +41,8 @@ body {
   border-bottom: 1px solid var(--border);
   margin-bottom: 18px;
 }
+.brand-wrap { min-width: 0; }
+.brand-logo { display: block; width: min(252px, 60vw); height: auto; margin-bottom: 8px; }
 .eyebrow {
   margin: 0;
   letter-spacing: 0.08em;
@@ -120,6 +122,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--accent) 78%, transparen
 @media (max-width: 700px) {
   .shell { padding: 12px; }
   .topbar { flex-direction: column; gap: 10px; }
+  .brand-logo { width: min(230px, 78vw); }
   .stats-grid { grid-template-columns: 1fr; }
   h1 { font-size: 22px; }
 }

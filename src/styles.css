@@ -110,6 +110,13 @@ body {
   color: var(--muted-foreground);
 }
 
+.brand-logo {
+  display: block;
+  width: min(252px, 64vw);
+  height: auto;
+  margin-bottom: 8px;
+}
+
 h1 {
   margin: 4px 0 0;
   font-family: "Inter", sans-serif;
@@ -424,6 +431,51 @@ select option {
   color: var(--muted-foreground);
 }
 
+.quality-compact-list {
+  display: grid;
+  gap: 8px;
+}
+
+.quality-compact-item {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+  align-items: start;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--card) 90%, var(--background));
+}
+
+.quality-compact-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.quality-compact-detail {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  line-height: 1.4;
+}
+
+.quality-ok {
+  border-color: var(--border);
+  background: color-mix(in srgb, #15803d 4%, var(--card));
+}
+
+.quality-warn {
+  border-color: var(--border);
+  background: color-mix(in srgb, #b45309 5%, var(--card));
+}
+
+.quality-alert {
+  border-color: var(--border);
+  background: color-mix(in srgb, #b91c1c 5%, var(--card));
+}
+
 /* ── Table ── */
 .table-wrap {
   max-height: 640px;
@@ -534,6 +586,21 @@ canvas {
 
 .chart-mounted {
   display: block;
+}
+
+.insights-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 0;
+}
+
+.insight-stat-card .insight-value {
+  font-size: 16px;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+}
+
+.profile-history-block {
+  margin-top: 14px;
 }
 
 /* ── Brush ── */
@@ -824,6 +891,10 @@ canvas {
     align-items: flex-start;
     gap: 8px;
   }
+
+  .insights-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── Plain mode fallback ── */
@@ -844,19 +915,20 @@ body.plain-mode th {
 /* ── Section Navigation ── */
 .section-nav {
   position: sticky;
-  top: 0;
+  top: 10px;
   z-index: 50;
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 6px 8px;
-  margin: -8px 0 20px;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px;
+  margin: 0 0 20px;
   background: color-mix(in srgb, var(--background) 92%, transparent);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  overflow-x: auto;
+  overflow: visible;
 }
 
 .section-nav a {
@@ -880,6 +952,13 @@ body.plain-mode th {
 .section-nav a.active {
   background: var(--primary);
   color: var(--primary-foreground);
+}
+
+@media (max-width: 1024px) {
+  .section-nav {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
 }
 
 /* ── Sortable Table Headers ── */

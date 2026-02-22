@@ -2,15 +2,18 @@ import { useEffect, useState } from "react";
 
 const NAV_SECTIONS = [
   { id: "stats", label: "Overview" },
+  { id: "insights", label: "Insights" },
   { id: "leaderboard", label: "Leaderboard" },
   { id: "movers", label: "Movers" },
   { id: "anomalies", label: "Anomalies" },
-  { id: "reset-impact", label: "Reset Impact" },
-  { id: "consistency", label: "Consistency" },
-  { id: "watchlist", label: "Watchlist" },
-  { id: "guild-check", label: "Guild Check" },
+  { id: "week-compare", label: "Week Comparison" },
   { id: "progression", label: "Progression" },
   { id: "compare", label: "Compare" },
+  { id: "watchlist", label: "Watchlist" },
+  { id: "profile", label: "Profile" },
+  { id: "reset-impact", label: "Reset Impact" },
+  { id: "consistency", label: "Consistency" },
+  { id: "guild-check", label: "Guild Check" },
 ];
 
 export function SectionNav() {

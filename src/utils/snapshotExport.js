@@ -2,33 +2,46 @@ import { buildBarChartSvg, buildLineChartSvg } from "./shareReport/charts";
 import { esc, list, section, statCards, table } from "./shareReport/primitives";
 import { reportCss } from "./shareReport/styles";
 
+const sharedLogoSvg = `
+<svg class="brand-logo" viewBox="0 0 252 56" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <defs>
+    <linearGradient id="shareDarkMist" x1="6" y1="8" x2="58" y2="48" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E2E8F0"/>
+      <stop offset="1" stop-color="#94A3B8"/>
+    </linearGradient>
+    <linearGradient id="shareDarkAccent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22D3EE"/>
+      <stop offset="1" stop-color="#60A5FA"/>
+    </linearGradient>
+  </defs>
+  <rect x="3" y="4" width="54" height="48" rx="12" fill="#09090B" stroke="#27272A"/>
+  <path d="M10 31C16 24 22 24 28 31C34 38 40 38 50 28" stroke="url(#shareDarkMist)" stroke-width="3.2" stroke-linecap="round"/>
+  <path d="M13 22C18 17 24 17 30 22C36 27 42 27 48 22" stroke="#64748B" stroke-width="2.4" stroke-linecap="round"/>
+  <circle cx="46" cy="17" r="3.4" fill="url(#shareDarkAccent)"/>
+  <g fill="#FAFAFA">
+    <path d="M74.2 18.1H80L86 34.2L92 18.1H97.7L88.9 39H83L74.2 18.1Z"/>
+    <path d="M106.6 39.6C100.3 39.6 95.9 34.8 95.9 28.5C95.9 22.3 100.3 17.5 106.6 17.5C112.9 17.5 117.3 22.3 117.3 28.5C117.3 34.8 112.9 39.6 106.6 39.6ZM106.6 34.8C109.8 34.8 112.1 32.2 112.1 28.5C112.1 24.9 109.8 22.3 106.6 22.3C103.4 22.3 101.1 24.9 101.1 28.5C101.1 32.2 103.4 34.8 106.6 34.8Z"/>
+    <path d="M118.8 18.1H124.6L129 24.5L133.4 18.1H139.1L132 28.2L139.3 39H133.4L129 32.4L124.4 39H118.6L126 28.2L118.8 18.1Z"/>
+  </g>
+  <text x="145" y="36" fill="#94A3B8" font-size="10.5" font-family="Inter,Segoe UI,Arial,sans-serif" letter-spacing="0.16em">OF THE MISTS</text>
+</svg>`;
+
 export function buildSnapshotHtml(snapshot) {
   const generatedAt = esc(snapshot.generatedAt || "-");
   const timezone = esc(snapshot.timeZone || "UTC");
   const title = snapshot.title || `Vox of the Mists - Report - ${generatedAt}`;
 
-  const overview = section(
-    "Overview",
-    list([
-      `<strong>Timezone:</strong> ${timezone}`,
-      `<strong>Latest snapshot:</strong> ${esc(snapshot.overview.latestSnapshot)}`,
-      `<strong>Next snapshot:</strong> ${esc(snapshot.overview.nextSnapshot)}`,
-      `<strong>Ingestion:</strong> ${esc(snapshot.overview.ingestionStatus)}`,
-      `<strong>Last run:</strong> ${esc(snapshot.overview.lastRun)}`,
-      `<strong>Storage:</strong> ${esc(snapshot.overview.storage)}`,
-      `<strong>Week reset:</strong> ${esc(snapshot.overview.weekReset)}`,
-      `<strong>Velocity:</strong> ${esc(snapshot.overview.velocity)}`,
-    ]),
-    "Operational snapshot for current filters and timezone."
-  );
-
   const kpis = section(
-    "Highlights",
+    "Overview Cards",
     statCards([
-      { label: "Snapshots", value: String(snapshot.overview.storage || "-").split("|")[0]?.trim() || "-" },
-      { label: "Latest Snapshot", value: String(snapshot.overview.latestSnapshot || "-").split("|")[0]?.trim() || "-" },
+      { label: "Latest Snapshot", value: snapshot.overview.latestSnapshot || "-" },
+      { label: "Next Snapshot", value: snapshot.overview.nextSnapshot || "-" },
       { label: "Ingestion", value: snapshot.overview.ingestionStatus || "-" },
-      { label: "Top Projection", value: snapshot.compareProjectionLeader || "-" },
+      { label: "Last Run", value: snapshot.overview.lastRun || "-" },
+      { label: "Storage", value: snapshot.overview.storage || "-" },
+      { label: "Week Reset", value: snapshot.overview.weekReset || "-" },
+      { label: "Velocity", value: snapshot.overview.velocity || "-" },
+      { label: "Share Preset", value: snapshot.overview.sharePreset || "Full detail" },
     ])
   );
 
@@ -174,14 +187,15 @@ export function buildSnapshotHtml(snapshot) {
 <body>
   <div class="shell">
     <header class="topbar">
-      <div>
+      <div class="brand-wrap">
+        ${sharedLogoSvg}
         <p class="eyebrow">Shared Report</p>
         <h1>${esc(snapshot.title || "Vox of the Mists - Shared Report")}</h1>
+        <p class="muted">Built from your current dashboard filters and selected timezone.</p>
       </div>
-      <p class="meta muted">Generated at ${generatedAt} (${timezone})</p>
+      <p class="meta muted">Generated at ${generatedAt}<br/>Timezone: ${timezone}</p>
     </header>
     ${kpis}
-    ${overview}
     ${charts}
     ${leaderboard}
     ${movers}

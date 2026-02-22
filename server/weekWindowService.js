@@ -98,8 +98,11 @@ function createWeekWindowService(db) {
       const local = getBrusselsLocalParts(new Date(ms));
       if (local.weekday !== "Fri" || local.hour !== 18 || local.minute !== 45) continue;
 
-      const weekEndUtcMs = zonedLocalToUtcMs(local.year, local.month, local.day, 19, 0, 0);
-      const weekEndUtc = new Date(weekEndUtcMs).toISOString();
+      // Use the 18:45 pre-reset snapshot as selectable archived week identifier.
+      // Keep endUtc at reset time (19:00 local) so queries remain [start, end) and exclude reseted data.
+      const weekEndUtc = new Date(ms).toISOString();
+      const endUtcMs = zonedLocalToUtcMs(local.year, local.month, local.day, 19, 0, 0);
+      const endUtc = new Date(endUtcMs).toISOString();
       if (seen.has(weekEndUtc)) continue;
       seen.add(weekEndUtc);
 
@@ -116,7 +119,7 @@ function createWeekWindowService(db) {
       out.push({
         weekEndUtc,
         startUtc: new Date(weekStartUtcMs).toISOString(),
-        endUtc: weekEndUtc,
+        endUtc,
         anchorSnapshotId: row.snapshot_id,
         anchorCreatedAt: createdAt,
       });
@@ -127,7 +130,12 @@ function createWeekWindowService(db) {
 
   function resolveWeekWindowForRequest(weekEndIso = null) {
     if (!weekEndIso) return { weekWindow: getCurrentWeekWindowBrussels(), selectedWeekEndUtc: null };
-    const match = listSelectableWeekWindows().find((item) => item.weekEndUtc === weekEndIso);
+    const allWeeks = listSelectableWeekWindows();
+    let match = allWeeks.find((item) => item.weekEndUtc === weekEndIso);
+    if (!match) {
+      // Backward compatibility for older persisted selections that used reset-time identifiers.
+      match = allWeeks.find((item) => item.endUtc === weekEndIso);
+    }
     if (!match) return null;
     return {
       weekWindow: { startUtc: match.startUtc, endUtc: match.endUtc },

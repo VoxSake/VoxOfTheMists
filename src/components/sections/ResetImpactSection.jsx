@@ -17,9 +17,9 @@ export function ResetImpactSection({
           <div className="toolbar compact">
             <span className="muted">Reset Window</span>
             <select value={resetImpactWindow} onChange={(e) => setResetImpactWindow(Number(e.target.value))}>
-              <option value={1}>First 1h</option>
               <option value={3}>First 3h</option>
-              <option value={6}>First 6h</option>
+              <option value={5}>First 5h (default)</option>
+              <option value={12}>First 12h</option>
             </select>
           </div>
         </div>

@@ -22,9 +22,6 @@ export function LeaderboardSection({
   onRefresh,
   runManualSnapshot,
   snapshotRunning,
-  canRunManualAppwriteSync,
-  appwriteSyncBusy,
-  runManualAppwriteSync,
   exportLeaderboardCsv,
   latestSnapshot,
   timeZone,
@@ -106,11 +103,6 @@ export function LeaderboardSection({
             {canRunManualSnapshot ? (
               <button className="btn btn-snapshot" disabled={snapshotRunning} onClick={runManualSnapshot}>
                 {snapshotRunning ? "Snapshot..." : "⚡ Snapshot"}
-              </button>
-            ) : null}
-            {canRunManualAppwriteSync ? (
-              <button className="btn btn-snapshot" disabled={appwriteSyncBusy} onClick={runManualAppwriteSync}>
-                {appwriteSyncBusy ? "Appwrite Sync..." : "↻ Appwrite Sync"}
               </button>
             ) : null}
             <button className="btn ghost" onClick={exportLeaderboardCsv}>
