@@ -39,6 +39,7 @@ const {
   APPWRITE_BACKFILL_TARGET_MINUTE,
   APPWRITE_FUNCTION_ID,
   TRUSTED_LOCAL_ORIGINS,
+  REMOTE_ADMIN_TRUSTED_ORIGIN_ENABLED,
   WRITE_API_TOKEN,
   AUTO_SCRAPE_EFFECTIVE,
   API_CACHE_MAX_ENTRIES,
@@ -772,7 +773,8 @@ function hasTrustedBrowserOrigin(request) {
 }
 
 function requireTrustedLocalWrite(request, reply, done) {
-  if (!isLoopbackIp(request.ip)) {
+  const fromLoopback = isLoopbackIp(request.ip);
+  if (!fromLoopback && !REMOTE_ADMIN_TRUSTED_ORIGIN_ENABLED) {
     reply.code(403).send({ error: "Forbidden" });
     return;
   }
@@ -795,7 +797,8 @@ function requireTrustedLocalWrite(request, reply, done) {
 }
 
 function requireTrustedLocalRead(request, reply, done) {
-  if (!isLoopbackIp(request.ip)) {
+  const fromLoopback = isLoopbackIp(request.ip);
+  if (!fromLoopback && !REMOTE_ADMIN_TRUSTED_ORIGIN_ENABLED) {
     reply.code(403).send({ error: "Forbidden" });
     return;
   }

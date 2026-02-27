@@ -15,6 +15,7 @@ test("buildConfig applies defaults and clamps ranges", () => {
   assert.equal(cfg.APPWRITE_BACKFILL_ENABLED, false);
   assert.equal(cfg.APPWRITE_BACKFILL_TARGET_MINUTE, 30);
   assert.equal(cfg.API_CACHE_MAX_ENTRIES, 1000);
+  assert.equal(cfg.REMOTE_ADMIN_TRUSTED_ORIGIN_ENABLED, false);
   assert.equal(cfg.AUTO_SCRAPE_EFFECTIVE, true);
 });
 
@@ -30,6 +31,7 @@ test("buildConfig respects overrides and clamps out-of-range values", () => {
     APPWRITE_BACKFILL_ENABLED: "1",
     APPWRITE_BACKFILL_TARGET_MINUTE: "-2",
     API_CACHE_MAX_ENTRIES: "50",
+    REMOTE_ADMIN_TRUSTED_ORIGIN_ENABLED: "1",
   });
 
   assert.equal(cfg.PORT, 65535);
@@ -42,6 +44,7 @@ test("buildConfig respects overrides and clamps out-of-range values", () => {
   assert.equal(cfg.APPWRITE_BACKFILL_ENABLED, true);
   assert.equal(cfg.APPWRITE_BACKFILL_TARGET_MINUTE, 0);
   assert.equal(cfg.API_CACHE_MAX_ENTRIES, 100);
+  assert.equal(cfg.REMOTE_ADMIN_TRUSTED_ORIGIN_ENABLED, true);
   assert.equal(cfg.AUTO_SCRAPE_EFFECTIVE, false);
 });
 

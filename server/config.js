@@ -64,6 +64,7 @@ function buildConfig(env) {
   const APPWRITE_FUNCTION_ID = toTrimmedString(env.APPWRITE_FUNCTION_ID);
 
   const TRUSTED_LOCAL_ORIGINS = parseTrustedOrigins(env.TRUSTED_LOCAL_ORIGINS, PORT);
+  const REMOTE_ADMIN_TRUSTED_ORIGIN_ENABLED = parseBool(env.REMOTE_ADMIN_TRUSTED_ORIGIN_ENABLED, false);
   const WRITE_API_TOKEN = toTrimmedString(env.WRITE_API_TOKEN || crypto.randomBytes(32).toString("hex"));
   const API_CACHE_MAX_ENTRIES = parseNumber(env.API_CACHE_MAX_ENTRIES, 1000, { min: 100 });
 
@@ -93,6 +94,7 @@ function buildConfig(env) {
     APPWRITE_BACKFILL_TARGET_MINUTE,
     APPWRITE_FUNCTION_ID,
     TRUSTED_LOCAL_ORIGINS,
+    REMOTE_ADMIN_TRUSTED_ORIGIN_ENABLED,
     WRITE_API_TOKEN,
     AUTO_SCRAPE_EFFECTIVE,
     API_CACHE_MAX_ENTRIES,

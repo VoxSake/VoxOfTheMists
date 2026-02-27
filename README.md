@@ -134,6 +134,7 @@ All supported server variables are listed in `.env.example`.
 - `HOST=0.0.0.0`: bind host for the HTTP server (use `0.0.0.0` in containers/Coolify)
 - `WRITE_API_TOKEN=`: required token for local write routes (`x-admin-token` header). If empty, server generates one at startup (recommended to set explicitly in `.env`)
 - `TRUSTED_LOCAL_ORIGINS=http://127.0.0.1:3000,http://localhost:3000,http://127.0.0.1:5173,http://localhost:5173`: allowed browser Origin/Referer for local write/read protected routes
+- `REMOTE_ADMIN_TRUSTED_ORIGIN_ENABLED=0`: set to `1` only when you need write/auth routes from trusted non-loopback origins behind a reverse proxy (Coolify)
 - `AUTO_SCRAPE=1`: enable hourly auto-snapshot (`0` disables)
 - `PYTHON_CMD=python`: python executable used by server snapshot process
 - `APPWRITE_SYNC_ENABLED=0`: enable Appwrite -> local SQLite sync (`1` enables)
@@ -159,7 +160,7 @@ All supported server variables are listed in `.env.example`.
 Share/Webhook notes:
 - Discord webhook URLs are only used at request time via local write endpoint relay (`POST /api/share/discord`).
 - The webhook URL is not persisted in server env; client-side persistence is browser-local.
-- Share relay routes remain protected by loopback + trusted origin + `x-admin-token`.
+- Share relay routes remain protected by trusted origin + `x-admin-token` and are loopback-only unless `REMOTE_ADMIN_TRUSTED_ORIGIN_ENABLED=1`.
 
 ## Appwrite Setup (Optional)
 
