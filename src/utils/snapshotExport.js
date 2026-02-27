@@ -188,6 +188,7 @@ export function buildSnapshotHtml(snapshot) {
   <div class="shell">
     <header class="topbar">
       <div class="brand-wrap">
+        <span class="badge">Shadcn + Catppuccin</span>
         ${sharedLogoSvg}
         <p class="eyebrow">Shared Report</p>
         <h1>${esc(snapshot.title || "Vox of the Mists - Shared Report")}</h1>

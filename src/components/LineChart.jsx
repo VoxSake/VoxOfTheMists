@@ -347,17 +347,38 @@ export function LineChart({ payload, metric, timeZone, themeDark, baselineMode =
             ];
         });
 
-        const allValues = [];
-        datasets.forEach((ds) => ds.data.forEach((p) => allValues.push(Number(p))));
-        const finiteValues = allValues.filter((v) => Number.isFinite(v));
+        const historicalValues = [];
+        const projectedValues = [];
+        datasets.forEach((ds) => {
+            ds.data.forEach((point) => {
+                const value = Number(point);
+                if (!Number.isFinite(value)) return;
+                if (ds.isProjected) {
+                    projectedValues.push(value);
+                } else {
+                    historicalValues.push(value);
+                }
+            });
+        });
+        const finiteValues = [...historicalValues, ...projectedValues];
         let yMin;
         let yMax;
-        if (finiteValues.length) {
-            const min = Math.min(...finiteValues);
-            const max = Math.max(...finiteValues);
+        const scaleValues = historicalValues.length ? historicalValues : finiteValues;
+        if (scaleValues.length) {
+            const min = Math.min(...scaleValues);
+            const max = Math.max(...scaleValues);
             const delta = Math.max(1, max - min);
             yMin = Math.max(0, Math.floor(min - delta * 0.08));
             yMax = Math.ceil(max + delta * 0.08);
+
+            if (historicalValues.length && projectedValues.length) {
+                const projectedMax = Math.max(...projectedValues);
+                const includeProjectionThreshold = max + Math.max(1, delta * 0.8);
+                const softProjectionCeiling = max + Math.max(1, delta * 0.35);
+                const boundedMax = projectedMax <= includeProjectionThreshold ? projectedMax : softProjectionCeiling;
+                yMax = Math.ceil(Math.max(yMax, boundedMax + delta * 0.08));
+            }
+            if (yMax <= yMin) yMax = yMin + 1;
         }
 
         const projectionStartCandidates = Object.values(payload?.projectionStartByAccount || {})
