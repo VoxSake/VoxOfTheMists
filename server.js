@@ -982,6 +982,8 @@ async function buildServer() {
         connectSrc: ["'self'"],
         objectSrc: ["'none'"],
         frameAncestors: ["'none'"],
+        // Keep HTTP preview domains (e.g. sslip.io) functional by not forcing HTTPS upgrades.
+        "upgrade-insecure-requests": null,
       },
     },
   });
