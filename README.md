@@ -131,6 +131,7 @@ Common options:
 All supported server variables are listed in `.env.example`.
 
 - `PORT=3000`: API/web port
+- `HOST=0.0.0.0`: bind host for the HTTP server (use `0.0.0.0` in containers/Coolify)
 - `WRITE_API_TOKEN=`: required token for local write routes (`x-admin-token` header). If empty, server generates one at startup (recommended to set explicitly in `.env`)
 - `TRUSTED_LOCAL_ORIGINS=http://127.0.0.1:3000,http://localhost:3000,http://127.0.0.1:5173,http://localhost:5173`: allowed browser Origin/Referer for local write/read protected routes
 - `AUTO_SCRAPE=1`: enable hourly auto-snapshot (`0` disables)

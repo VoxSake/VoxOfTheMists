@@ -44,7 +44,7 @@ const {
   API_CACHE_MAX_ENTRIES,
 } = config;
 
-const HOST = "127.0.0.1";
+const HOST = String(process.env.HOST || "").trim() || "0.0.0.0";
 const ROOT = __dirname;
 const DIST_DIR = path.join(ROOT, "dist");
 const DB_PATH = path.join(ROOT, "data", "vox.db");
