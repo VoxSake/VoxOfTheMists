@@ -246,9 +246,19 @@ function registerOpsRoutes(fastify, deps) {
         return reply.code(409).send({ error: "Appwrite sync already in progress", status: appwriteSyncStatus });
       }
       try {
-        const result = await appwriteSyncService.runSyncAsync("manual-api");
-        appwriteSyncService.scheduleSync();
-        return { ok: true, result, status: appwriteSyncStatus };
+        appwriteSyncService
+          .runSyncAsync("manual-api")
+          .then(() => {
+            appwriteSyncService.scheduleSync();
+          })
+          .catch((error) => {
+            fastify.log.error(`[api/sync/run] Background sync failed: ${error?.message || "unknown_error"}`);
+          });
+        return reply.code(202).send({
+          ok: true,
+          started: true,
+          status: appwriteSyncStatus,
+        });
       } catch (error) {
         fastify.log.error(`[api/sync/run] Failed: ${error?.message || "unknown_error"}`);
         return reply.code(500).send({ error: "Appwrite sync failed", status: appwriteSyncStatus });

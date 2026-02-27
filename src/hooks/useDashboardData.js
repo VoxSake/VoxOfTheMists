@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
-import { fmtNumber } from "../utils";
 import { useSnapshotStatusPolling } from "./useSnapshotStatusPolling";
 import { useWatchlistAlerts } from "./useWatchlistAlerts";
 
@@ -204,41 +203,20 @@ export function useDashboardData({
     setAppwriteSyncRunning(true);
     addToast({ title: "Appwrite Sync", description: "Running sync...", variant: "default", duration: 3000 });
     try {
-      const payload = await api.runManualAppwriteSync();
-      const result = payload?.result || {};
-      const importedSnapshots = Math.max(0, Number(result.importedSnapshots || 0));
-      const importedEntries = Math.max(0, Number(result.importedEntries || 0));
-      const fetched = Math.max(0, Number(result.fetched || 0));
-
-      if (importedSnapshots > 0) {
-        await refreshAll();
-        addToast({
-          title: "Appwrite Sync Complete",
-          description: `Imported ${fmtNumber(importedSnapshots)} snapshot(s), ${fmtNumber(importedEntries)} entries.`,
-          variant: "success",
-        });
-      } else {
-        await loadHealth().catch(() => {});
-        const latestCreatedAt = String(latestSnapshot?.createdAt || "").trim();
-        const description =
-          fetched > 0
-            ? `Checked ${fmtNumber(fetched)} snapshot(s), but none were imported.`
-            : latestCreatedAt
-              ? `No Appwrite snapshots are newer than local latest (${latestCreatedAt} UTC).`
-              : "No snapshots are available in Appwrite yet.";
-        addToast({
-          title: "Appwrite Sync",
-          description,
-          variant: "default",
-          duration: 4500,
-        });
-      }
+      await api.runManualAppwriteSync();
+      await loadHealth().catch(() => {});
+      addToast({
+        title: "Appwrite Sync Started",
+        description: "Sync is running in background. Dashboard will refresh when new data is imported.",
+        variant: "default",
+        duration: 4500,
+      });
     } catch (error) {
       addToast({ title: "Appwrite Sync Failed", description: error.message, variant: "error" });
     } finally {
       setAppwriteSyncRunning(false);
     }
-  }, [appwriteSyncRunning, latestSnapshot, addToast, refreshAll, loadHealth]);
+  }, [appwriteSyncRunning, addToast, loadHealth]);
 
   const fetchSnapshotStatus = useCallback(async () => {
     try {
